@@ -1,6 +1,6 @@
-from typing import TypedDict, Literal
+from typing import TypedDict
 
 class ResponseSchema(TypedDict):
     user_query: str
-    query_response: str
-    
+    video_ids: list[str]
+    transcript: str
