@@ -1,7 +1,8 @@
 import yaml
-from langchain_google_genai import ChatGoogleGenerativeAI
+# from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_groq import ChatGroq
 from langchain.agents import create_agent
-from settings import GOOGLE_API_KEY
+from settings import GROQ_API_KEY
 from pathlib import Path
 
 
@@ -20,7 +21,7 @@ def create_agent_with_tools(agent_name: str, tools: list):
     if not system_prompt:
         raise ValueError(f"Prompt for '{agent_name}' not found in {PROMPTS_PATH}. Key expected: {prompt_key}")
 
-    model = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=GOOGLE_API_KEY)
+    model = ChatGroq(model="llama-3.3-70b-versatile", api_key=GROQ_API_KEY)
     
     agent = create_agent(
         model=model,
