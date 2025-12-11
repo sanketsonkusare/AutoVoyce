@@ -1,15 +1,18 @@
-from datetime import datetime
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_experimental.text_splitter import SemanticChunker
 from src.utils.pinecone_vector_index import PineconeVectorIndex
-from src.schemas.response_schema import ResponseSchema
+from langchain.tools import tool
 
-def pinecone_uploader(state: ResponseSchema) -> dict:
+@tool
+def upload_transcript_to_pinecone(transcript: str) -> str:
+    """
+    Uploads a YouTube transcript to the Pinecone vector database.
+    Useful when you need to store transcript text for later retrieval or Q&A.
+    """
     print("Starting Pinecone upload process...")
-    transcript = state.get("transcript", "")
     if not transcript:
         print("No transcript to upload.")
-        return {"query_response": "No transcript found to upload."}
+        return "No transcript found to upload."
 
     try:
         # Initialize Embeddings
@@ -42,7 +45,7 @@ def pinecone_uploader(state: ResponseSchema) -> dict:
         
         success_msg = f"Transcript successfully uploaded to Pinecone namespace '{namespace}'."
         print(success_msg)
-        return {"query_response": success_msg}
+        return success_msg
         
     except Exception as e:
         error_msg = f"Error uploading to Pinecone: {str(e)}"
@@ -50,9 +53,9 @@ def pinecone_uploader(state: ResponseSchema) -> dict:
         # Import traceback to print full stack trace for debugging
         import traceback
         traceback.print_exc()
-        return {"query_response": error_msg}
+        return error_msg
 
 if __name__ == "__main__":
     # Test execution
-    mock_state = {"user_query": "test", "video_ids": [], "transcript": "This is a test transcript for Pinecone upload verification.\n" * 50, "query_response": ""}
-    print(pinecone_uploader(mock_state))
+    mock_transcript = "This is a test transcript for Pinecone upload verification.\n" * 50
+    print(upload_transcript_to_pinecone.invoke({"transcript": mock_transcript}))
