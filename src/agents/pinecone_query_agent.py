@@ -34,7 +34,7 @@ def query_agent(query: str) -> dict:
         import traceback
         traceback.print_exc()
         
-    return {"query": query, "query_response": response}
+    return response
 
 if __name__ == "__main__":
     test_query = "Which is the best iphone for students?"
