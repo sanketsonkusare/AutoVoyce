@@ -5,21 +5,22 @@ from src.agents.agent_creator import create_agent_with_tools
 
 def uploader_agent(state: ResponseSchema) -> dict:
     transcript = state.get("transcript", "")
-    
-    agent = create_agent_with_tools("uploader_agent", [upload_transcript_to_pinecone])
+    namespace = state.get("namespace", "youtube_transcripts")  # Get namespace from state
     
     if not transcript:
         return {"transcript": "No transcript provided."}
 
-    print(f"Processing transcript upload...")
+    print(f"Processing transcript upload to namespace: {namespace}...")
     try:
-        result = agent.invoke({
-            "messages": [HumanMessage(content=f"Upload this transcript to Pinecone: {transcript}")]
+        # Call the tool directly with namespace
+        response = upload_transcript_to_pinecone.invoke({
+            "transcript": transcript,
+            "namespace": namespace
         })
-
-        response = result["output"] 
     except Exception as e:
         response = f"Error during upload: {str(e)}"
+        import traceback
+        traceback.print_exc()
     
     return {"transcript": transcript, "query_response": response}
 

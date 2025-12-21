@@ -4,3 +4,4 @@ class ResponseSchema(TypedDict):
     user_query: str
     video_ids: list[str]
     transcript: str
+    namespace: str  # Session-specific Pinecone namespace

@@ -16,7 +16,13 @@ def retriever_agent(state: ResponseSchema) -> dict:
         "messages": [HumanMessage(content=query)]
     })
 
-    content = result["messages"][-1].content
+    # Extract content from result - handle both string and list responses
+    content = result.get("messages", [])[-1].content if result.get("messages") else ""
+    
+    # If content is a list, join it into a string
+    if isinstance(content, list):
+        content = " ".join(str(item) for item in content)
+    
     matches = re.findall(r"v=([a-zA-Z0-9_-]+)", content)
     
     video_ids = []

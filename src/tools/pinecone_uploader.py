@@ -4,10 +4,14 @@ from src.utils.pinecone_vector_index import PineconeVectorIndex
 from langchain.tools import tool
 
 @tool
-def upload_transcript_to_pinecone(transcript: str) -> str:
+def upload_transcript_to_pinecone(transcript: str, namespace: str = "youtube_transcripts") -> str:
     """
     Uploads a YouTube transcript to the Pinecone vector database.
     Useful when you need to store transcript text for later retrieval or Q&A.
+    
+    Args:
+        transcript: The transcript text to upload
+        namespace: The Pinecone namespace to use for isolation (default: "youtube_transcripts")
     """
     print("Starting Pinecone upload process...")
     if not transcript:
@@ -32,9 +36,7 @@ def upload_transcript_to_pinecone(transcript: str) -> str:
             chunks = chunker.split_text(transcript)
             return chunks
         
-        # Upload
-        # We use a default namespace or generate one. Let's use "youtube-transcripts" or derived from query.
-        namespace = "youtube_transcripts"
+        # Upload to specified namespace
         print(f"Uploading transcript to Pinecone (Namespace: {namespace})...")
         
         vector_index.create_or_load_vector_index(
