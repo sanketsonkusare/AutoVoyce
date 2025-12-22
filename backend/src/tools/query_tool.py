@@ -4,8 +4,21 @@ from langchain.tools import tool
 from pydantic import Field
 from src.utils import session_manager
 
-pc = Pinecone(api_key=PINECONE_API_KEY)
-index = pc.Index(host=PINECONE_HOST_URL)
+# Lazy initialization - only create when needed
+_pc = None
+_index = None
+
+def get_index():
+    """Lazily initializes and returns the Pinecone index."""
+    global _pc, _index
+    if _index is None:
+        if not PINECONE_API_KEY:
+            raise ValueError("PINECONE_API_KEY environment variable is not set")
+        if not PINECONE_HOST_URL:
+            raise ValueError("PINECONE_HOST_URL environment variable is not set")
+        _pc = Pinecone(api_key=PINECONE_API_KEY)
+        _index = _pc.Index(host=PINECONE_HOST_URL)
+    return _index
 
 
 @tool
@@ -17,6 +30,7 @@ def query_tool(query: str = Field(description="The search query to find relevant
     """    
     print(f"🔍 query_tool searching in namespace: {namespace}")
     
+    index = get_index()
     results = index.search(
         namespace=namespace, 
         query={
