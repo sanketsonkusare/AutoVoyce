@@ -1,0 +1,21 @@
+{
+  "name": "autovoyce-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "AutoVoyce monorepo - Backend and Frontend",
+  "scripts": {
+    "dev:backend": "cd backend && uv run uvicorn src.main.main:app --host 0.0.0.0 --port 8000 --reload",
+    "dev:frontend": "cd frontend && npm run dev",
+    "dev": "concurrently -n \"backend,frontend\" -c \"blue,green\" \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:all": "npm run dev",
+    "install:backend": "cd backend && uv sync",
+    "install:frontend": "cd frontend && npm install",
+    "install:all": "npm run install:backend && npm run install:frontend",
+    "build:frontend": "cd frontend && npm run build",
+    "start:frontend": "cd frontend && npm start"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
+
