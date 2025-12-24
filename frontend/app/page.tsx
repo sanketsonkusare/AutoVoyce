@@ -16,7 +16,6 @@ import {
 } from "lucide-react";
 import { SharedHeader } from "@/components/shared-header";
 import { SharedFooter } from "@/components/shared-footer";
-import { SparkleDecoration } from "@/components/sparkle-decoration";
 import { cn } from "@/lib/utils";
 
 interface WaveformBar {
@@ -398,7 +397,6 @@ export default function LandingPage() {
       </main>
 
       <SharedFooter />
-      <SparkleDecoration />
     </div>
   );
 }

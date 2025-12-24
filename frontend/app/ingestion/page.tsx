@@ -19,7 +19,6 @@ import { cn } from "@/lib/utils";
 import { API_ENDPOINTS } from "@/lib/config";
 import { SharedHeader } from "@/components/shared-header";
 import { SharedFooter } from "@/components/shared-footer";
-import { SparkleDecoration } from "@/components/sparkle-decoration";
 
 type IngestionStep = "input" | "preview" | "processing" | "complete";
 
@@ -598,7 +597,6 @@ export default function IngestionPage() {
       </main>
 
       <SharedFooter />
-      <SparkleDecoration />
     </div>
   );
 }
