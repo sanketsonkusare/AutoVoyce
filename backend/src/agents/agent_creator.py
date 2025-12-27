@@ -26,7 +26,19 @@ def create_agent_with_tools(agent_name: str, tools: list, verbose: bool = True):
     if not system_prompt_text:
         raise ValueError(f"Prompt for '{agent_name}' not found in {PROMPTS_PATH}. Key expected: {prompt_key}")
 
-    model = ChatGoogleGenerativeAI(model="gemini-2.5-flash", api_key=GOOGLE_API_KEY, verbose=verbose)
+    # Ensure GOOGLE_API_KEY is set
+    if not GOOGLE_API_KEY:
+        # Try reloading environment in case we're in a background thread
+        from dotenv import load_dotenv
+        from os import getenv
+        load_dotenv(".env")
+        api_key = getenv("GOOGLE_API_KEY")
+        if not api_key:
+            raise ValueError("GOOGLE_API_KEY environment variable is not set. Please set it in your .env file.")
+    else:
+        api_key = GOOGLE_API_KEY
+
+    model = ChatGoogleGenerativeAI(model="gemini-2.5-flash", api_key=api_key, verbose=verbose)
     
     # Wrap prompt in SystemMessage
     system_prompt = SystemMessage(content=system_prompt_text)

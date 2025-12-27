@@ -26,6 +26,9 @@ def create_session() -> tuple[str, str]:
     _sessions[session_id] = namespace
     _session_last_access[session_id] = time.time()
     _last_session_id = session_id
+    print(f"✅ Created session: {session_id} -> {namespace}")
+    print(f"📋 Total sessions now: {len(_sessions)}")
+    print(f"📋 Session keys: {list(_sessions.keys())}")
     return session_id, namespace
 
 def update_last_access(session_id: str):
@@ -42,7 +45,11 @@ def get_namespace(session_id: str) -> Optional[str]:
     Retrieves the namespace for a given session ID.
     Returns: namespace or None if session doesn't exist
     """
-    return _sessions.get(session_id)
+    namespace = _sessions.get(session_id)
+    if not namespace:
+        print(f"⚠️ Session {session_id} not found in _sessions dict")
+        print(f"📋 Current sessions: {list(_sessions.keys())}")
+    return namespace
 
 def set_current_namespace(namespace: str):
     """
@@ -64,8 +71,10 @@ def delete_session(session_id: str) -> bool:
     Returns: True if session was deleted, False if it didn't exist
     """
     print(f"🗑️ Attempting to delete session: {session_id}")
+    print(f"📋 Sessions before delete: {list(_sessions.keys())}")
     namespace = _sessions.pop(session_id, None)
     _session_last_access.pop(session_id, None)
+    print(f"📋 Sessions after delete: {list(_sessions.keys())}")
     
     if namespace:
         print(f"📦 Found namespace to delete: {namespace}")

@@ -379,7 +379,7 @@ export default function IngestionPage() {
                       />
                     </div>
 
-                    <div>
+                    {/* <div>
                       <label className="block text-sm font-medium text-slate-300 mb-2">
                         YouTube URLs (one per line)
                       </label>
@@ -392,7 +392,7 @@ export default function IngestionPage() {
                         rows={4}
                         className="w-full rounded-lg border border-slate-600/50 bg-slate-900/50 px-4 py-3 text-white placeholder:text-slate-500 focus:outline-none focus:border-violet-500/50 transition-colors text-sm disabled:opacity-50 resize-none"
                       />
-                    </div>
+                    </div> */}
 
                     <div className="flex justify-center pt-2">
                       <button
