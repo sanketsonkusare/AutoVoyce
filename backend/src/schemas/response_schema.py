@@ -6,3 +6,4 @@ class ResponseSchema(TypedDict, total=False):
     transcript: str
     namespace: str  # Session-specific Pinecone namespace
     query_response: Optional[str]  # Upload confirmation/error message
+    session_id: str  # Session ID for event emission

@@ -1,12 +1,16 @@
 from fastapi import FastAPI, HTTPException, Response, Cookie, Header
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional, List
 from src.workflow.workflow import processing_workflow
 from src.agents.pinecone_query_agent import query_agent
 from src.agents.youtube_retriever_agent import retriever_agent_with_metadata
 from src.utils import session_manager
+from src.utils.event_emitter import event_emitter
 from settings import DEFAULT_TIMEOUT_SECONDS
+import asyncio
+import json
 
 app = FastAPI()
 
@@ -156,6 +160,7 @@ async def process_selected_videos(
             import sys
 
             print(f"🔄 BACKGROUND THREAD STARTED for session: {session_id}", flush=True)
+            event_emitter.emit(session_id, "processing_started", f"Processing started for {len(request.video_ids)} videos")
             sys.stdout.flush()
 
             try:
@@ -170,6 +175,7 @@ async def process_selected_videos(
                     "video_ids": request.video_ids,
                     "transcript": "",
                     "namespace": namespace,
+                    "session_id": session_id,  # Pass session_id to workflow for event emission
                 }
                 print(
                     f"🚀 Starting processing workflow for session: {session_id} with {len(request.video_ids)} videos",
@@ -186,6 +192,7 @@ async def process_selected_videos(
                     f"✅ Processing workflow completed for session: {session_id}",
                     flush=True,
                 )
+                event_emitter.emit(session_id, "processing_complete", "All videos processed successfully")
 
                 # Update last access after processing completes to keep session alive
                 session_manager.update_last_access(session_id)
@@ -245,6 +252,67 @@ def startup_event():
     # Start the background cleanup scheduler (checks every 60s, expires after DEFAULT_TIMEOUT_SECONDS)
     session_manager.start_cleanup_scheduler(
         timeout_seconds=int(DEFAULT_TIMEOUT_SECONDS)
+    )
+
+
+@app.get("/upload/status/{session_id}")
+async def stream_processing_status(session_id: str):
+    """
+    Server-Sent Events endpoint for streaming processing status updates.
+    Frontend connects to this endpoint to receive real-time updates.
+    """
+    import queue
+    import threading
+    
+    async def event_generator():
+        # Send initial connection message
+        yield f"data: {json.dumps({'type': 'connected', 'message': 'Connected to processing status stream'})}\n\n"
+        
+        # Thread-safe queue for events
+        event_queue = queue.Queue()
+        
+        def on_event(event):
+            """Callback to add events to the queue (called from background thread)"""
+            event_queue.put(event)
+        
+        # Subscribe to events for this session
+        event_emitter.subscribe(session_id, on_event)
+        
+        try:
+            # Send any existing events first
+            existing_events = event_emitter.get_events(session_id)
+            for event in existing_events:
+                yield f"data: {json.dumps(event)}\n\n"
+            
+            # Keep connection alive and stream new events
+            while True:
+                try:
+                    # Wait for new event with timeout (non-blocking check)
+                    try:
+                        event = event_queue.get(timeout=1.0)
+                        yield f"data: {json.dumps(event)}\n\n"
+                    except queue.Empty:
+                        # Send keepalive
+                        yield f": keepalive\n\n"
+                        await asyncio.sleep(0.1)  # Small delay to prevent busy loop
+                        continue
+                except Exception as e:
+                    print(f"Error in SSE stream: {e}", flush=True)
+                    break
+        except asyncio.CancelledError:
+            pass
+        finally:
+            # Unsubscribe when client disconnects
+            event_emitter.unsubscribe(session_id, on_event)
+    
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # Disable buffering in nginx
+        }
     )
 
 

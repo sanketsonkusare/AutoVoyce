@@ -1,13 +1,15 @@
 from src.utils.base import VectorIndexStrategy
 from settings import PINECONE_API_KEY, PINECONE_INDEX_NAME
 from pinecone import Pinecone
+from src.utils.event_emitter import event_emitter
 
 class PineconeVectorIndex(VectorIndexStrategy):
-    def  __init__ (self, embeddings):
+    def  __init__ (self, embeddings, session_id: str = ""):
         self.__collection_name = PINECONE_INDEX_NAME
         self.__api_key = Pinecone(api_key=PINECONE_API_KEY)
         self.__embeddings = embeddings
         self.__collection = False
+        self.__session_id = session_id
 
     def create_or_load_vector_index(self, markdown_text: str, chunker=None, namespace: str = None):
         # Note: We removed the self.__collection check because we want to allow multiple uploads to different namespaces
@@ -46,6 +48,11 @@ class PineconeVectorIndex(VectorIndexStrategy):
         # Upsert to Pinecone with namespace
         index.upsert(vectors=pinecone_vectors, namespace=namespace)
         print(f"Uploaded {len(pinecone_vectors)} chunks to Pinecone index '{self.__collection_name}' in namespace '{namespace}'")
+        if self.__session_id:
+            event_emitter.emit(self.__session_id, "chunks_uploaded", f"Uploaded {len(pinecone_vectors)} chunks to Pinecone", {
+                "chunk_count": len(pinecone_vectors),
+                "namespace": namespace
+            })
         self.__collection = True
         return self
     

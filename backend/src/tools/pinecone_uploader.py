@@ -1,10 +1,11 @@
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_experimental.text_splitter import SemanticChunker
 from src.utils.pinecone_vector_index import PineconeVectorIndex
+from src.utils.event_emitter import event_emitter
 from langchain.tools import tool
 
 @tool
-def upload_transcript_to_pinecone(transcript: str, namespace: str = "youtube_transcripts") -> str:
+def upload_transcript_to_pinecone(transcript: str, namespace: str = "youtube_transcripts", session_id: str = "") -> str:
     """
     Uploads a YouTube transcript to the Pinecone vector database.
     Useful when you need to store transcript text for later retrieval or Q&A.
@@ -12,8 +13,12 @@ def upload_transcript_to_pinecone(transcript: str, namespace: str = "youtube_tra
     Args:
         transcript: The transcript text to upload
         namespace: The Pinecone namespace to use for isolation (default: "youtube_transcripts")
+        session_id: Optional session ID for event emission
     """
     print("Starting Pinecone upload process...")
+    if session_id:
+        event_emitter.emit(session_id, "pinecone_upload_started", "Starting Pinecone upload process...")
+    
     if not transcript:
         print("No transcript to upload.")
         return "No transcript found to upload."
@@ -21,10 +26,12 @@ def upload_transcript_to_pinecone(transcript: str, namespace: str = "youtube_tra
     try:
         # Initialize Embeddings
         print("Initializing Embedding Model (sentence-transformers/all-MiniLM-L6-v2)...")
+        if session_id:
+            event_emitter.emit(session_id, "embedding_model_init", "Initializing Embedding Model (sentence-transformers/all-MiniLM-L6-v2)...")
         embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
         
         # Initialize Vector Index Wrapper
-        vector_index = PineconeVectorIndex(embeddings)
+        vector_index = PineconeVectorIndex(embeddings, session_id=session_id)
         
         # Define Chunker
         chunker = SemanticChunker(
@@ -38,6 +45,8 @@ def upload_transcript_to_pinecone(transcript: str, namespace: str = "youtube_tra
         
         # Upload to specified namespace
         print(f"Uploading transcript to Pinecone (Namespace: {namespace})...")
+        if session_id:
+            event_emitter.emit(session_id, "pinecone_uploading", f"Uploading transcript to Pinecone (Namespace: {namespace})...")
         
         vector_index.create_or_load_vector_index(
             markdown_text=transcript,

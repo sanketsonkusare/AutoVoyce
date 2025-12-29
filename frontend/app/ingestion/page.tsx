@@ -1,7 +1,7 @@
 "use client";
 
 import type React from "react";
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   Play,
   Check,
@@ -51,6 +51,7 @@ export default function IngestionPage() {
   const [videoPreviews, setVideoPreviews] = useState<VideoPreview[]>([]);
   const [selectedVideos, setSelectedVideos] = useState<Set<string>>(new Set());
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const eventSourceRef = useRef<EventSource | null>(null);
 
   const addLog = (message: string, status: LogStatus) => {
     const newLog: LogEntry = {
@@ -61,6 +62,140 @@ export default function IngestionPage() {
     };
     setLogs((prev) => [...prev, newLog]);
   };
+
+  const connectToStatusStream = (sessionId: string) => {
+    // Close existing connection if any
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+    }
+
+    const eventSource = new EventSource(
+      `${API_ENDPOINTS.UPLOAD_STATUS}/${sessionId}`
+    );
+
+    eventSource.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        handleProcessingEvent(data);
+      } catch (error) {
+        console.error("Error parsing SSE event:", error);
+      }
+    };
+
+    eventSource.onerror = (error) => {
+      console.error("SSE connection error:", error);
+      eventSource.close();
+      eventSourceRef.current = null;
+    };
+
+    eventSourceRef.current = eventSource;
+  };
+
+  const handleProcessingEvent = (event: any) => {
+    const { type, message, data } = event;
+
+    switch (type) {
+      case "connected":
+        addLog("Connected to processing status stream", "info");
+        break;
+
+      case "processing_started":
+        addLog(message, "progress");
+        break;
+
+      case "transcript_started":
+        addLog(message, "progress");
+        break;
+
+      case "video_processing":
+        addLog(message, "progress");
+        // Update video status to processing
+        if (data?.video_id) {
+          setVideoPreviews((prev) =>
+            prev.map((v) =>
+              v.id === data.video_id ? { ...v, status: "processing" } : v
+            )
+          );
+        }
+        break;
+
+      case "video_processed":
+        addLog(message, "success");
+        // Update video status to ready
+        if (data?.video_id) {
+          setVideoPreviews((prev) =>
+            prev.map((v) =>
+              v.id === data.video_id ? { ...v, status: "ready" } : v
+            )
+          );
+        }
+        break;
+
+      case "video_error":
+        addLog(message, "error");
+        // Update video status to error
+        if (data?.video_id) {
+          setVideoPreviews((prev) =>
+            prev.map((v) =>
+              v.id === data.video_id ? { ...v, status: "error" } : v
+            )
+          );
+        }
+        break;
+
+      case "transcript_complete":
+        addLog(message, "success");
+        break;
+
+      case "pinecone_upload_started":
+        addLog(message, "progress");
+        break;
+
+      case "embedding_model_init":
+        addLog(message, "progress");
+        break;
+
+      case "pinecone_uploading":
+        addLog(message, "progress");
+        break;
+
+      case "chunks_uploaded":
+        addLog(message, "success");
+        break;
+
+      case "pinecone_upload_complete":
+        addLog(message, "success");
+        break;
+
+      case "pinecone_upload_error":
+        addLog(message, "error");
+        break;
+
+      case "processing_complete":
+        addLog(message, "success");
+        setCurrentStep("complete");
+        setIsResearching(false);
+        // Close SSE connection
+        if (eventSourceRef.current) {
+          eventSourceRef.current.close();
+          eventSourceRef.current = null;
+        }
+        break;
+
+      default:
+        addLog(message || `Event: ${type}`, "info");
+    }
+  };
+
+  // Cleanup SSE connection on unmount
+  useEffect(() => {
+    return () => {
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+        eventSourceRef.current = null;
+      }
+    };
+  }, []);
 
   const handleStartResearch = async () => {
     if (!topic.trim() && !urls.trim()) return;
@@ -219,20 +354,12 @@ export default function IngestionPage() {
       }
 
       addLog(data.message || "Processing started successfully", "success");
-      addLog("Videos are being processed in the background...", "info");
-      addLog("You can start querying in a few moments", "info");
-
-      // Mark all videos as ready after a short delay (processing happens in background)
-      setTimeout(() => {
-        setVideoPreviews((prev) =>
-          prev.map((v) =>
-            selectedVideos.has(v.id) ? { ...v, status: "ready" } : v
-          )
-        );
-        addLog("Processing completed!", "success");
-        setCurrentStep("complete");
-        setIsResearching(false);
-      }, 2000); // Give it 2 seconds to show processing state
+      
+      // Connect to SSE for real-time updates
+      const currentSessionId = data.session_id || sessionId;
+      if (currentSessionId) {
+        connectToStatusStream(currentSessionId);
+      }
     } catch (error) {
       console.error("Error during ingestion:", error);
       addLog(
