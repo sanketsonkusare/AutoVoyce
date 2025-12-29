@@ -2,6 +2,7 @@
 
 import type React from "react";
 import { useState, useRef, useEffect } from "react";
+import ReactMarkdown from "react-markdown";
 import {
   Send,
   Mic,
@@ -69,33 +70,6 @@ export default function ChatPage() {
   const [isTyping, setIsTyping] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [showContext, setShowContext] = useState<Record<string, boolean>>({});
-  const [currentTopic, setCurrentTopic] = useState<Topic>({
-    id: "1",
-    name: "Machine Learning Fundamentals",
-    videos: [
-      {
-        id: "1",
-        title: "Introduction to Neural Networks",
-        channel: "AI Explained",
-        duration: "15:30",
-        status: "ready",
-      },
-      {
-        id: "2",
-        title: "Deep Learning Basics",
-        channel: "Tech Talks",
-        duration: "22:15",
-        status: "ready",
-      },
-      {
-        id: "3",
-        title: "ML Algorithms Explained",
-        channel: "Data Science",
-        duration: "18:45",
-        status: "analyzing",
-      },
-    ],
-  });
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [hasSession, setHasSession] = useState<boolean | null>(null);
@@ -103,13 +77,13 @@ export default function ChatPage() {
   // Helper function to get session_id from localStorage or cookies
   const getSessionId = (): string | null => {
     if (typeof window === "undefined") return null;
-    
+
     // First try localStorage (more reliable for localhost)
     const localStorageId = localStorage.getItem("autovoyce_session_id");
     if (localStorageId) {
       return localStorageId;
     }
-    
+
     // Fallback to cookies
     const cookies = document.cookie.split(";");
     for (const cookie of cookies) {
@@ -118,7 +92,7 @@ export default function ChatPage() {
         return decodeURIComponent(value);
       }
     }
-    
+
     return null;
   };
 
@@ -132,7 +106,7 @@ export default function ChatPage() {
     console.log("Chat page loaded - Session ID:", sessionId); // Debug
     console.log("LocalStorage:", localStorage.getItem("autovoyce_session_id")); // Debug
     setHasSession(!!sessionId);
-    
+
     if (!sessionId) {
       // Update welcome message if no session
       setMessages([
@@ -179,22 +153,22 @@ export default function ChatPage() {
     try {
       // Get session_id from localStorage or cookies
       const sessionId = getSessionId();
-      
+
       if (!sessionId) {
         throw new Error(
           "No active session found. Please upload videos first from the Ingestion page."
         );
       }
-      
+
       console.log("Using session_id:", sessionId); // Debug log
-      
+
       const response = await fetch(API_ENDPOINTS.QUERY, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           "X-Session-ID": sessionId, // Send session_id as header
         },
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           user_query: queryText,
         }),
         credentials: "include", // Include cookies in the request
@@ -202,15 +176,17 @@ export default function ChatPage() {
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        const errorMessage = errorData.detail || `Failed to query: ${response.statusText}`;
-        
+        const errorMessage =
+          errorData.detail || `Failed to query: ${response.statusText}`;
+
         // If session error, show helpful message
         if (response.status === 401 || response.status === 404) {
           throw new Error(
-            errorMessage + " Please upload videos first from the Ingestion page."
+            errorMessage +
+              " Please upload videos first from the Ingestion page."
           );
         }
-        
+
         throw new Error(errorMessage);
       }
 
@@ -295,46 +271,6 @@ export default function ChatPage() {
 
       {/* Main Chat Area */}
       <main className="flex-1 flex overflow-hidden">
-        {/* Left Sidebar */}
-        <aside className="hidden md:flex w-80 border-r border-slate-700/30 bg-slate-900/30 flex-col">
-          {/* Topic Header */}
-          <div className="p-4 border-b border-slate-700/30">
-            <h2 className="text-lg font-semibold text-white mb-1">
-              {currentTopic.name}
-            </h2>
-            <p className="text-xs text-slate-400">
-              {currentTopic.videos.length} videos analyzed
-            </p>
-          </div>
-
-          {/* Video List */}
-          <div className="flex-1 overflow-y-auto p-4 space-y-2">
-            <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">
-              Videos
-            </h3>
-            {currentTopic.videos.map((video) => (
-              <VideoCard
-                key={video.id}
-                title={video.title}
-                channel={video.channel}
-                duration={video.duration}
-                status={video.status}
-                onClick={() => {
-                  // Scroll to video reference in chat
-                  console.log("Navigate to video:", video.id);
-                }}
-              />
-            ))}
-          </div>
-
-          {/* Switch Topic Button */}
-          <div className="p-4 border-t border-slate-700/30">
-            <button className="w-full px-4 py-2 rounded-lg border border-slate-700/50 bg-slate-800/50 hover:bg-slate-700/50 text-sm text-slate-300 hover:text-white transition-colors">
-              Switch Topic
-            </button>
-          </div>
-        </aside>
-
         {/* Main Chat Area */}
         <div className="flex-1 flex flex-col">
           <div className="relative flex-1 flex flex-col overflow-hidden">
@@ -357,9 +293,129 @@ export default function ChatPage() {
                           : "bg-slate-800/50 border border-slate-700/50 text-slate-100"
                       )}
                     >
-                      <p className="text-sm leading-relaxed whitespace-pre-wrap">
-                        {message.content}
-                      </p>
+                      <div className="text-sm leading-relaxed">
+                        <ReactMarkdown
+                          components={{
+                            // Headings
+                            h1: ({ node, ...props }) => (
+                              <h1
+                                className="text-lg font-bold mb-2 mt-3 first:mt-0"
+                                {...props}
+                              />
+                            ),
+                            h2: ({ node, ...props }) => (
+                              <h2
+                                className="text-base font-semibold mb-2 mt-3 first:mt-0"
+                                {...props}
+                              />
+                            ),
+                            h3: ({ node, ...props }) => (
+                              <h3
+                                className="text-sm font-semibold mb-1.5 mt-2 first:mt-0"
+                                {...props}
+                              />
+                            ),
+                            // Paragraphs
+                            p: ({ node, ...props }) => (
+                              <p className="mb-2 last:mb-0" {...props} />
+                            ),
+                            // Lists
+                            ul: ({ node, ...props }) => (
+                              <ul
+                                className="list-disc list-inside mb-2 space-y-1"
+                                {...props}
+                              />
+                            ),
+                            ol: ({ node, ...props }) => (
+                              <ol
+                                className="list-decimal list-inside mb-2 space-y-1"
+                                {...props}
+                              />
+                            ),
+                            li: ({ node, ...props }) => (
+                              <li className="ml-4" {...props} />
+                            ),
+                            // Code blocks
+                            code: ({ node, inline, ...props }: any) => {
+                              if (inline) {
+                                return (
+                                  <code
+                                    className={cn(
+                                      "px-1.5 py-0.5 rounded text-xs font-mono",
+                                      message.role === "user"
+                                        ? "bg-white/20 text-white"
+                                        : "bg-slate-700/50 text-violet-300"
+                                    )}
+                                    {...props}
+                                  />
+                                );
+                              }
+                              return (
+                                <code
+                                  className={cn(
+                                    "block p-3 rounded-lg text-xs font-mono overflow-x-auto mb-2",
+                                    message.role === "user"
+                                      ? "bg-white/10 text-white"
+                                      : "bg-slate-900/50 text-slate-200 border border-slate-700/50"
+                                  )}
+                                  {...props}
+                                />
+                              );
+                            },
+                            pre: ({ node, ...props }) => (
+                              <pre className="mb-2" {...props} />
+                            ),
+                            // Links
+                            a: ({ node, ...props }) => (
+                              <a
+                                className={cn(
+                                  "underline hover:no-underline",
+                                  message.role === "user"
+                                    ? "text-white/90 hover:text-white"
+                                    : "text-violet-400 hover:text-violet-300"
+                                )}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                {...props}
+                              />
+                            ),
+                            // Strong/Bold
+                            strong: ({ node, ...props }) => (
+                              <strong className="font-semibold" {...props} />
+                            ),
+                            // Emphasis/Italic
+                            em: ({ node, ...props }) => (
+                              <em className="italic" {...props} />
+                            ),
+                            // Blockquotes
+                            blockquote: ({ node, ...props }) => (
+                              <blockquote
+                                className={cn(
+                                  "border-l-4 pl-3 py-1 my-2 italic",
+                                  message.role === "user"
+                                    ? "border-white/30 text-white/80"
+                                    : "border-slate-600 text-slate-300"
+                                )}
+                                {...props}
+                              />
+                            ),
+                            // Horizontal rule
+                            hr: ({ node, ...props }) => (
+                              <hr
+                                className={cn(
+                                  "my-3 border-0 border-t",
+                                  message.role === "user"
+                                    ? "border-white/20"
+                                    : "border-slate-700"
+                                )}
+                                {...props}
+                              />
+                            ),
+                          }}
+                        >
+                          {message.content}
+                        </ReactMarkdown>
+                      </div>
                       <p
                         className={cn(
                           "text-[10px] mt-1.5",
