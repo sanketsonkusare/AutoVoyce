@@ -14,4 +14,4 @@ PINECONE_API_KEY = getenv("PINECONE_API_KEY")
 PINECONE_INDEX_NAME = getenv("PINECONE_INDEX_NAME")
 PINECONE_HOST_URL = getenv("PINECONE_HOST_URL")
 NAMESPACE = "youtube_transcripts"
-DEFAULT_TIMEOUT_SECONDS = 300  # 5 minutes - increased to allow time for processing and querying
+DEFAULT_TIMEOUT_SECONDS = 43200  # 12 hours (12 * 60 * 60)

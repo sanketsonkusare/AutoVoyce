@@ -115,9 +115,10 @@ def cleanup_expired_sessions(timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS):
         print(f"⏰ Session {session_id} expired (inactive > {timeout_seconds}s). Cleaning up...")
         delete_session(session_id)
 
-def start_cleanup_scheduler(interval_seconds: int = 60, timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS):
+def start_cleanup_scheduler(interval_seconds: int = 300, timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS):
     """
     Starts a background thread that runs cleanup every interval_seconds.
+    Default interval is 5 minutes (300s) to check for expired sessions.
     """
     global _scheduler_thread, _stop_scheduler
     
@@ -127,7 +128,8 @@ def start_cleanup_scheduler(interval_seconds: int = 60, timeout_seconds: int = D
     _stop_scheduler.clear()
     
     def scheduler_loop():
-        print(f"🕒 Session cleanup scheduler started (Check every {interval_seconds}s, Timeout {timeout_seconds}s)")
+        timeout_hours = timeout_seconds / 3600
+        print(f"🕒 Session cleanup scheduler started (Check every {interval_seconds}s, Expire after {timeout_hours:.1f} hours)")
         while not _stop_scheduler.is_set():
             try:
                 cleanup_expired_sessions(timeout_seconds)

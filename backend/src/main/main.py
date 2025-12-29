@@ -153,43 +153,71 @@ async def process_selected_videos(
         from concurrent.futures import ThreadPoolExecutor
 
         def run_processing_workflow():
-            # Ensure environment variables are loaded in background thread
-            from dotenv import load_dotenv
+            import sys
 
-            load_dotenv(".env")
+            print(f"🔄 BACKGROUND THREAD STARTED for session: {session_id}", flush=True)
+            sys.stdout.flush()
 
-            initial_state = {
-                "user_query": "",  # Not needed for processing
-                "video_ids": request.video_ids,
-                "transcript": "",
-                "namespace": namespace,
-            }
-            print(
-                f"Starting processing workflow for session: {session_id} with {len(request.video_ids)} videos"
-            )
             try:
+                # Ensure environment variables are loaded in background thread
+                from dotenv import load_dotenv
+
+                load_dotenv(".env")
+                print(f"✅ Environment loaded", flush=True)
+
+                initial_state = {
+                    "user_query": "",  # Not needed for processing
+                    "video_ids": request.video_ids,
+                    "transcript": "",
+                    "namespace": namespace,
+                }
+                print(
+                    f"🚀 Starting processing workflow for session: {session_id} with {len(request.video_ids)} videos",
+                    flush=True,
+                )
+                print(f"📋 Video IDs: {request.video_ids}", flush=True)
+
                 # Update last access at start of processing to prevent cleanup
                 session_manager.update_last_access(session_id)
+                print(f"✅ Session access updated", flush=True)
 
                 result = processing_workflow.invoke(initial_state)
-                print(f"Processing workflow completed for session: {session_id}")
+                print(
+                    f"✅ Processing workflow completed for session: {session_id}",
+                    flush=True,
+                )
 
                 # Update last access after processing completes to keep session alive
                 session_manager.update_last_access(session_id)
-                print(f"✅ Updated last access for session: {session_id}")
+                print(f"✅ Updated last access for session: {session_id}", flush=True)
 
                 return result
             except Exception as e:
-                print(f"❌ Error in processing workflow: {str(e)}")
+                print(f"❌ Error in processing workflow: {str(e)}", flush=True)
                 import traceback
 
                 traceback.print_exc()
+                sys.stdout.flush()
                 raise
 
         # Run in background thread (fire and forget)
+        print(f"📤 Scheduling background processing for session: {session_id}")
         loop = asyncio.get_event_loop()
         executor = ThreadPoolExecutor(max_workers=1)
-        loop.run_in_executor(executor, run_processing_workflow)
+        future = loop.run_in_executor(executor, run_processing_workflow)
+
+        # Add error callback to catch any issues
+        def handle_future_result(fut):
+            try:
+                fut.result()  # This will raise if there was an error
+            except Exception as e:
+                print(f"❌ Background processing failed: {e}", flush=True)
+                import traceback
+
+                traceback.print_exc()
+
+        future.add_done_callback(handle_future_result)
+        print(f"✅ Background task scheduled", flush=True)
 
         # Return immediately
         response_data = {
