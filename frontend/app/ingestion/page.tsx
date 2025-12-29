@@ -39,6 +39,7 @@ interface VideoPreview {
   thumbnail?: string;
   hasTranscript: boolean;
   status: "pending" | "fetching" | "processing" | "ready" | "error";
+  thumbnailError?: boolean;
 }
 
 export default function IngestionPage() {
@@ -49,6 +50,7 @@ export default function IngestionPage() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [videoPreviews, setVideoPreviews] = useState<VideoPreview[]>([]);
   const [selectedVideos, setSelectedVideos] = useState<Set<string>>(new Set());
+  const [sessionId, setSessionId] = useState<string | null>(null);
 
   const addLog = (message: string, status: LogStatus) => {
     const newLog: LogEntry = {
@@ -85,34 +87,51 @@ export default function IngestionPage() {
       }
 
       const data = await response.json();
-      addLog("Videos found successfully", "success");
 
-      // Parse response - adjust based on actual API response structure
-      // For now, we'll create a generic structure
-      // If the API returns video data, parse it here
-      const detectedVideos: VideoPreview[] = Array.isArray(data.videos)
-        ? data.videos.map((video: any, index: number) => ({
-            id: video.id || `video-${index + 1}`,
-            title: video.title || video.name || `Video ${index + 1}`,
-            channel: video.channel || video.channel_name || "Unknown Channel",
-            duration: video.duration || "N/A",
-            thumbnail: video.thumbnail || video.thumbnail_url,
-            hasTranscript: video.has_transcript !== false,
-            status: "pending" as const,
-          }))
-        : // Fallback: create placeholder videos if API doesn't return structured data
-          [
-            {
-              id: "1",
-              title: "Video 1",
-              channel: "Processing...",
-              duration: "N/A",
-              hasTranscript: true,
-              status: "pending" as const,
-            },
-          ];
+      if (!data.videos || data.videos.length === 0) {
+        addLog("No videos found. Try a different search query.", "error");
+        return;
+      }
+
+      addLog(`Found ${data.videos.length} videos successfully`, "success");
+
+      // Store session_id for later use (in state and localStorage)
+      if (data.session_id) {
+        setSessionId(data.session_id);
+        // Store in localStorage so chat page can access it
+        localStorage.setItem("autovoyce_session_id", data.session_id);
+        console.log("Stored session_id in localStorage:", data.session_id); // Debug
+      } else {
+        console.warn("No session_id in upload response:", data); // Debug
+      }
+
+      // Parse video data from API response
+      // Thumbnail can be an object with 'static' and 'rich' properties, or a string
+      const detectedVideos: VideoPreview[] = data.videos.map((video: any) => {
+        // Handle thumbnail - can be object or string
+        let thumbnailUrl: string | undefined;
+        if (typeof video.thumbnail === "string") {
+          thumbnailUrl = video.thumbnail;
+        } else if (video.thumbnail && typeof video.thumbnail === "object") {
+          thumbnailUrl =
+            video.thumbnail.static ||
+            video.thumbnail.rich ||
+            video.thumbnail.url;
+        }
+
+        return {
+          id: video.id,
+          title: video.title || "Unknown Title",
+          channel: video.channel || "Unknown Channel",
+          duration: video.duration || "N/A",
+          thumbnail: thumbnailUrl,
+          hasTranscript: true, // Assume available, will be checked during processing
+          status: "pending" as const,
+        };
+      });
 
       setVideoPreviews(detectedVideos);
+      // Select all videos by default
       setSelectedVideos(new Set(detectedVideos.map((v) => v.id)));
       setCurrentStep("preview");
     } catch (error) {
@@ -129,53 +148,91 @@ export default function IngestionPage() {
   };
 
   const handleConfirmIngestion = async () => {
-    if (selectedVideos.size === 0) return;
+    if (selectedVideos.size === 0) {
+      addLog("Please select at least one video to process", "error");
+      return;
+    }
+
+    if (!sessionId) {
+      addLog("Session expired. Please search again.", "error");
+      setCurrentStep("input");
+      return;
+    }
 
     setCurrentStep("processing");
     setIsResearching(true);
     setLogs([]);
 
+    const selectedVideoIds = Array.from(selectedVideos);
     const selectedVideoList = videoPreviews.filter((v) =>
       selectedVideos.has(v.id)
     );
 
+    // Update all selected videos to processing status
+    setVideoPreviews((prev) =>
+      prev.map((v) =>
+        selectedVideos.has(v.id) ? { ...v, status: "processing" } : v
+      )
+    );
+
+    addLog(
+      `Processing ${selectedVideoIds.length} selected video(s)...`,
+      "progress"
+    );
+
     try {
-      // The /upload endpoint handles the ingestion process
-      // We'll show progress for each selected video
-      for (let i = 0; i < selectedVideoList.length; i++) {
-        const video = selectedVideoList[i];
+      // Call the /upload/process endpoint with selected video IDs
+      const response = await fetch(API_ENDPOINTS.UPLOAD_PROCESS, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          video_ids: selectedVideoIds,
+          session_id: sessionId,
+        }),
+      });
 
-        // Update video status
-        setVideoPreviews((prev) =>
-          prev.map((v) =>
-            v.id === video.id ? { ...v, status: "fetching" } : v
-          )
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(
+          errorData.detail || `Failed to process videos: ${response.statusText}`
         );
-        addLog(`Fetching transcript for: ${video.title}`, "progress");
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-
-        setVideoPreviews((prev) =>
-          prev.map((v) =>
-            v.id === video.id ? { ...v, status: "processing" } : v
-          )
-        );
-        addLog(`Processing transcript for: ${video.title}`, "progress");
-        await new Promise((resolve) => setTimeout(resolve, 1500));
-
-        addLog(`Generating embeddings for: ${video.title}`, "progress");
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-
-        setVideoPreviews((prev) =>
-          prev.map((v) => (v.id === video.id ? { ...v, status: "ready" } : v))
-        );
-        addLog(`Completed: ${video.title}`, "success");
       }
 
-      addLog("Building knowledge base...", "progress");
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-      addLog("Research completed successfully!", "success");
+      const data = await response.json();
 
-      setCurrentStep("complete");
+      // Store session_id from process response if available
+      if (data.session_id) {
+        setSessionId(data.session_id);
+        localStorage.setItem("autovoyce_session_id", data.session_id);
+        console.log(
+          "Stored session_id from process in localStorage:",
+          data.session_id
+        ); // Debug
+      } else if (sessionId) {
+        // If we already have a session_id, make sure it's in localStorage
+        localStorage.setItem("autovoyce_session_id", sessionId);
+        console.log("Using existing session_id:", sessionId); // Debug
+      } else {
+        console.warn("No session_id in process response:", data); // Debug
+      }
+
+      addLog(data.message || "Processing started successfully", "success");
+      addLog("Videos are being processed in the background...", "info");
+      addLog("You can start querying in a few moments", "info");
+
+      // Mark all videos as ready after a short delay (processing happens in background)
+      setTimeout(() => {
+        setVideoPreviews((prev) =>
+          prev.map((v) =>
+            selectedVideos.has(v.id) ? { ...v, status: "ready" } : v
+          )
+        );
+        addLog("Processing completed!", "success");
+        setCurrentStep("complete");
+        setIsResearching(false);
+      }, 2000); // Give it 2 seconds to show processing state
     } catch (error) {
       console.error("Error during ingestion:", error);
       addLog(
@@ -184,7 +241,13 @@ export default function IngestionPage() {
           : "An error occurred during ingestion",
         "error"
       );
-    } finally {
+
+      // Mark videos as error
+      setVideoPreviews((prev) =>
+        prev.map((v) =>
+          selectedVideos.has(v.id) ? { ...v, status: "error" } : v
+        )
+      );
       setIsResearching(false);
     }
   };
@@ -206,6 +269,8 @@ export default function IngestionPage() {
     setVideoPreviews([]);
     setSelectedVideos(new Set());
     setLogs([]);
+    setSessionId(null);
+    // Don't clear localStorage here - keep session for chat page
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -445,9 +510,27 @@ export default function IngestionPage() {
                         onClick={() => handleToggleVideo(video.id)}
                       >
                         <div className="flex items-start gap-4">
-                          <div className="size-16 rounded-lg bg-gradient-to-br from-violet-600/20 to-purple-600/20 flex items-center justify-center border border-violet-500/30 shrink-0">
-                            <Video className="size-6 text-violet-400" />
-                          </div>
+                          {video.thumbnail && !video.thumbnailError ? (
+                            <img
+                              src={video.thumbnail}
+                              alt={video.title}
+                              className="size-16 rounded-lg object-cover border border-violet-500/30 shrink-0"
+                              onError={() => {
+                                // Mark thumbnail as failed
+                                setVideoPreviews((prev) =>
+                                  prev.map((v) =>
+                                    v.id === video.id
+                                      ? { ...v, thumbnailError: true }
+                                      : v
+                                  )
+                                );
+                              }}
+                            />
+                          ) : (
+                            <div className="size-16 rounded-lg bg-gradient-to-br from-violet-600/20 to-purple-600/20 flex items-center justify-center border border-violet-500/30 shrink-0">
+                              <Video className="size-6 text-violet-400" />
+                            </div>
+                          )}
                           <div className="flex-1 min-w-0">
                             <div className="flex items-start justify-between gap-2 mb-2">
                               <h3 className="text-sm font-medium text-white">

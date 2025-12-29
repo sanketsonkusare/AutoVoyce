@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Response, Cookie
+from fastapi import FastAPI, HTTPException, Response, Cookie, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List
@@ -252,17 +252,18 @@ def startup_event():
 def query_endpoint(
     request: QueryRequest,
     cookie_session_id: Optional[str] = Cookie(None, alias="session_id"),
+    x_session_id: Optional[str] = Header(None, alias="X-Session-ID"),
 ):
     """
     Invokes the Pinecone Query Agent to answer questions based on the knowledge base.
-    Uses session_id from request body or cookie to determine which namespace to query.
+    Uses session_id from header, request body, or cookie to determine which namespace to query.
     """
     try:
-        # Get session_id from request body or cookie
-        session_id = request.session_id or cookie_session_id
+        # Get session_id from header, request body, or cookie (in that priority order)
+        session_id = x_session_id or request.session_id or cookie_session_id
 
         print(
-            f"📥 Received query request. Body session_id: {request.session_id}, Cookie session_id: {cookie_session_id}"
+            f"📥 Received query request. Header session_id: {x_session_id}, Body session_id: {request.session_id}, Cookie session_id: {cookie_session_id}"
         )
         print(f"📋 Active sessions: {session_manager.get_all_sessions()}")
 

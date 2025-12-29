@@ -98,10 +98,54 @@ export default function ChatPage() {
   });
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [hasSession, setHasSession] = useState<boolean | null>(null);
+
+  // Helper function to get session_id from localStorage or cookies
+  const getSessionId = (): string | null => {
+    if (typeof window === "undefined") return null;
+    
+    // First try localStorage (more reliable for localhost)
+    const localStorageId = localStorage.getItem("autovoyce_session_id");
+    if (localStorageId) {
+      return localStorageId;
+    }
+    
+    // Fallback to cookies
+    const cookies = document.cookie.split(";");
+    for (const cookie of cookies) {
+      const [name, value] = cookie.trim().split("=");
+      if (name === "session_id") {
+        return decodeURIComponent(value);
+      }
+    }
+    
+    return null;
+  };
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
+
+  // Check for session on mount
+  useEffect(() => {
+    const sessionId = getSessionId();
+    console.log("Chat page loaded - Session ID:", sessionId); // Debug
+    console.log("LocalStorage:", localStorage.getItem("autovoyce_session_id")); // Debug
+    setHasSession(!!sessionId);
+    
+    if (!sessionId) {
+      // Update welcome message if no session
+      setMessages([
+        {
+          id: "1",
+          role: "assistant",
+          content:
+            "Hello! I'm AutoVoyce, your AI-powered video research assistant. It looks like you haven't uploaded any videos yet. Please go to the Ingestion page to search and process videos first, then come back here to ask questions!",
+          timestamp: new Date(),
+        },
+      ]);
+    }
+  }, []);
 
   useEffect(() => {
     scrollToBottom();
@@ -133,16 +177,41 @@ export default function ChatPage() {
     setIsTyping(true);
 
     try {
+      // Get session_id from localStorage or cookies
+      const sessionId = getSessionId();
+      
+      if (!sessionId) {
+        throw new Error(
+          "No active session found. Please upload videos first from the Ingestion page."
+        );
+      }
+      
+      console.log("Using session_id:", sessionId); // Debug log
+      
       const response = await fetch(API_ENDPOINTS.QUERY, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          "X-Session-ID": sessionId, // Send session_id as header
         },
-        body: JSON.stringify({ user_query: queryText }),
+        body: JSON.stringify({ 
+          user_query: queryText,
+        }),
+        credentials: "include", // Include cookies in the request
       });
 
       if (!response.ok) {
-        throw new Error(`Failed to query: ${response.statusText}`);
+        const errorData = await response.json().catch(() => ({}));
+        const errorMessage = errorData.detail || `Failed to query: ${response.statusText}`;
+        
+        // If session error, show helpful message
+        if (response.status === 401 || response.status === 404) {
+          throw new Error(
+            errorMessage + " Please upload videos first from the Ingestion page."
+          );
+        }
+        
+        throw new Error(errorMessage);
       }
 
       const data = await response.json();
