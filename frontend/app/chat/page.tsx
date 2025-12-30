@@ -12,6 +12,7 @@ import {
   ChevronDown,
   ChevronUp,
 } from "lucide-react";
+import { useScribe } from "@elevenlabs/react";
 import { cn } from "@/lib/utils";
 import { API_ENDPOINTS } from "@/lib/config";
 import { SharedHeader } from "@/components/shared-header";
@@ -70,9 +71,267 @@ export default function ChatPage() {
   const [isTyping, setIsTyping] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [showContext, setShowContext] = useState<Record<string, boolean>>({});
+  const [transcribedText, setTranscribedText] = useState("");
+  const [usedVoiceInput, setUsedVoiceInput] = useState(false); // Track if user used voice input
+  const usedVoiceInputRef = useRef(false); // Ref to track voice input (for closure issues)
+  const pendingRequestRef = useRef(false); // Track if there's a pending request to prevent duplicates
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [hasSession, setHasSession] = useState<boolean | null>(null);
+
+  // References for silence detection
+  const silenceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const animationFrameRef = useRef<number | null>(null);
+  const stopRecordingRef = useRef<((text: string) => Promise<void>) | null>(
+    null
+  );
+
+  // Function to stop recording (defined early so it can be called by other functions)
+  const stopRecording = async () => {
+    if (!isRecording) return;
+
+    setIsRecording(false);
+
+    // Clear silence detection timeout
+    if (silenceTimeoutRef.current) {
+      clearTimeout(silenceTimeoutRef.current);
+      silenceTimeoutRef.current = null;
+    }
+
+    // Cancel animation frame if active
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
+    }
+
+    // Stop the media stream if it exists
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+      mediaStreamRef.current = null;
+    }
+
+    // Close audio context
+    if (audioContextRef.current) {
+      try {
+        await audioContextRef.current.close();
+      } catch (error) {
+        console.error("Error closing audio context:", error);
+      }
+      audioContextRef.current = null;
+      analyserRef.current = null;
+    }
+
+    // Disconnect from ElevenLabs
+    try {
+      await scribe.disconnect();
+    } catch (error) {
+      console.error("Error disconnecting from scribe:", error);
+    }
+
+    // Automatically send the transcribed text after recording stops
+    if (transcribedText.trim() || inputValue.trim()) {
+      const queryText = transcribedText.trim() || inputValue.trim();
+      setTranscribedText(""); // Reset transcribed text
+      setInputValue(queryText); // Set input value
+
+      // Mark that voice input was used (both state and ref)
+      setUsedVoiceInput(true);
+      usedVoiceInputRef.current = true;
+
+      // Automatically send the transcribed query using the ref
+      if (stopRecordingRef.current) {
+        await stopRecordingRef.current(queryText);
+      }
+    }
+  };
+
+  // Function to reset the silence detection timer
+  const resetSilenceDetection = () => {
+    if (silenceTimeoutRef.current) {
+      clearTimeout(silenceTimeoutRef.current);
+    }
+
+    if (isRecording) {
+      silenceTimeoutRef.current = setTimeout(() => {
+        console.log("Silence detected for 1 second, stopping recording");
+        stopRecording();
+      }, 1000); // 1 second of silence
+    }
+  };
+
+  // ElevenLabs Scribe hook for realtime transcription (Speech-to-Text)
+  const scribe = useScribe({
+    modelId: "scribe_v2_realtime",
+    onPartialTranscript: (data) => {
+      // Update input field with partial transcript for real-time feedback
+      setInputValue(data.text);
+      // Reset silence timer when we get partial transcripts
+      resetSilenceDetection();
+    },
+    onCommittedTranscript: (data) => {
+      // Append committed transcript to accumulated text
+      setTranscribedText((prev) => {
+        const newText = prev ? `${prev} ${data.text}` : data.text;
+        setInputValue(newText);
+        return newText;
+      });
+      // Reset silence timer when we get committed transcripts
+      resetSilenceDetection();
+    },
+  });
+
+  // Text-to-Speech state
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  // Function to convert text to speech using ElevenLabs API
+  const speak = async (text: string) => {
+    try {
+      console.log("🎤 Starting TTS for text:", text.substring(0, 50) + "...");
+
+      // Stop any currently playing audio
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+
+      setIsSpeaking(true);
+      abortControllerRef.current = new AbortController();
+
+      // Get voice ID from environment or use default
+      const voiceId =
+        process.env.NEXT_PUBLIC_ELEVENLABS_VOICE_ID || "JBFqnCBsd6RMkjVDRZzb";
+
+      console.log("📞 Calling TTS endpoint:", API_ENDPOINTS.TTS);
+
+      // Call backend TTS endpoint
+      const response = await fetch(API_ENDPOINTS.TTS, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          text: text,
+          voice_id: voiceId,
+        }),
+        signal: abortControllerRef.current.signal,
+      });
+
+      console.log("📡 TTS response status:", response.status);
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error("❌ TTS API error:", errorText);
+        throw new Error(
+          `Failed to generate speech: ${response.status} ${errorText}`
+        );
+      }
+
+      // Get audio blob
+      const audioBlob = await response.blob();
+      console.log("🎵 Audio blob received, size:", audioBlob.size);
+
+      const audioUrl = URL.createObjectURL(audioBlob);
+
+      // Create and play audio
+      const audio = new Audio(audioUrl);
+      audioRef.current = audio;
+
+      audio.onended = () => {
+        console.log("✅ Audio playback completed");
+        setIsSpeaking(false);
+        URL.revokeObjectURL(audioUrl);
+        audioRef.current = null;
+      };
+
+      audio.onerror = (e) => {
+        console.error("❌ Error playing audio:", e);
+        setIsSpeaking(false);
+        URL.revokeObjectURL(audioUrl);
+        audioRef.current = null;
+      };
+
+      console.log("▶️ Starting audio playback...");
+      await audio.play();
+      console.log("✅ Audio playback started");
+    } catch (error: any) {
+      if (error.name !== "AbortError") {
+        console.error("❌ Error in speak function:", error);
+      }
+      setIsSpeaking(false);
+    }
+  };
+
+  // Function to stop speaking
+  const stopSpeaking = () => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    setIsSpeaking(false);
+  };
+
+  // Function to check audio levels
+  const checkAudioLevel = () => {
+    // Use a ref to track recording state to avoid stale closures
+    if (!analyserRef.current) {
+      animationFrameRef.current = null;
+      return;
+    }
+
+    // Check if still recording using the current state
+    // We'll check this at the end and continue only if recording
+    const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount);
+    analyserRef.current.getByteFrequencyData(dataArray);
+
+    // Calculate average volume level
+    const average =
+      dataArray.reduce((sum, value) => sum + value, 0) / dataArray.length;
+
+    console.log(`🔊 Audio level: ${average.toFixed(2)} (threshold: 10)`);
+
+    // If volume is below threshold, consider it silence
+    if (average < 100) {
+      // Silence detected - start or continue the timeout
+      if (!silenceTimeoutRef.current) {
+        console.log("🔇 Silence detected, starting 1 second timer...");
+        silenceTimeoutRef.current = setTimeout(() => {
+          console.log("⏱️ Silence detected for 1 second, stopping recording");
+          stopRecording();
+        }, 1000);
+      }
+      // If timeout already exists, let it continue
+    } else {
+      // Sound detected - clear any existing timeout
+      if (silenceTimeoutRef.current) {
+        console.log("🔊 Sound detected, clearing silence timer");
+        clearTimeout(silenceTimeoutRef.current);
+        silenceTimeoutRef.current = null;
+      }
+    }
+
+    // Continue checking audio levels only if still recording
+    if (isRecording) {
+      animationFrameRef.current = requestAnimationFrame(checkAudioLevel);
+    } else {
+      animationFrameRef.current = null;
+      // Clear timeout if recording stopped
+      if (silenceTimeoutRef.current) {
+        clearTimeout(silenceTimeoutRef.current);
+        silenceTimeoutRef.current = null;
+      }
+    }
+  };
 
   // Helper function to get session_id from localStorage or cookies
   const getSessionId = (): string | null => {
@@ -135,18 +394,189 @@ export default function ChatPage() {
     }
   }, [inputValue]);
 
+  // Cleanup effect for recording resources
+  useEffect(() => {
+    return () => {
+      // Cleanup on unmount
+      if (silenceTimeoutRef.current) {
+        clearTimeout(silenceTimeoutRef.current);
+      }
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+      }
+      if (mediaStreamRef.current) {
+        mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+      }
+      if (audioContextRef.current) {
+        audioContextRef.current.close().catch(console.error);
+      }
+      // Cleanup audio playback
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+    };
+  }, []);
+
   const handleSendMessage = async () => {
-    if (!inputValue.trim()) return;
+    // If recording is active, stop it first
+    if (isRecording) {
+      await stopRecording();
+      // stopRecording already calls handleSendMessageWithText automatically
+      // So we should return here to prevent duplicate calls
+      return;
+    } else {
+      // Text input was used, not voice
+      setUsedVoiceInput(false);
+      usedVoiceInputRef.current = false;
+    }
+
+    // Get the final text
+    const textToSend = inputValue.trim();
+    if (!textToSend) return;
+
+    // Reset transcribed text after sending
+    setTranscribedText("");
+
+    // Send the message
+    await handleSendMessageWithText(textToSend);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleSendMessage();
+    }
+  };
+
+  const handleMicClick = async () => {
+    if (isRecording) {
+      // Stop recording manually
+      await stopRecording();
+    } else {
+      // Start recording
+      try {
+        setIsRecording(true);
+        setTranscribedText("");
+        setInputValue("");
+
+        // Fetch token from backend
+        const response = await fetch(API_ENDPOINTS.SCRIBE_TOKEN);
+        if (!response.ok) {
+          throw new Error("Failed to get scribe token");
+        }
+
+        const { token } = await response.json();
+
+        // Set up audio context and analyzer for silence detection
+        const AudioContextClass =
+          window.AudioContext || (window as any).webkitAudioContext;
+        audioContextRef.current = new AudioContextClass();
+        analyserRef.current = audioContextRef.current.createAnalyser();
+        analyserRef.current.fftSize = 256;
+
+        // Get microphone access
+        mediaStreamRef.current = await navigator.mediaDevices.getUserMedia({
+          audio: true,
+        });
+
+        // Connect microphone to analyzer
+        const source = audioContextRef.current.createMediaStreamSource(
+          mediaStreamRef.current
+        );
+        source.connect(analyserRef.current);
+
+        // Connect to ElevenLabs with microphone access
+        await scribe.connect({
+          token,
+          microphone: {
+            echoCancellation: true,
+            noiseSuppression: true,
+          },
+        });
+
+        // Start checking audio levels
+        checkAudioLevel();
+
+        // Initial silence detection timer
+        resetSilenceDetection();
+      } catch (error) {
+        console.error("Error starting recording:", error);
+        setIsRecording(false);
+
+        // Clean up on error
+        if (mediaStreamRef.current) {
+          mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+          mediaStreamRef.current = null;
+        }
+        if (audioContextRef.current) {
+          try {
+            await audioContextRef.current.close();
+          } catch (e) {
+            // Ignore errors during cleanup
+          }
+          audioContextRef.current = null;
+          analyserRef.current = null;
+        }
+
+        // Show error message to user
+        const errorMessage: Message = {
+          id: Date.now().toString(),
+          role: "assistant",
+          content: `Sorry, I couldn't start the voice recording. Please make sure your microphone is enabled and try again. Error: ${
+            error instanceof Error ? error.message : "Unknown error"
+          }`,
+          timestamp: new Date(),
+        };
+        setMessages((prev) => [...prev, errorMessage]);
+      }
+    }
+  };
+
+  const handleSendMessageWithText = async (text: string) => {
+    if (!text.trim()) return;
+
+    // Prevent duplicate requests - check BEFORE adding user message
+    if (pendingRequestRef.current) {
+      console.log("⚠️ Request already pending, ignoring duplicate");
+      return;
+    }
+
+    pendingRequestRef.current = true;
+
+    // Generate unique ID for this message to prevent duplicates
+    const messageId = `${Date.now()}-${Math.random()
+      .toString(36)
+      .substr(2, 9)}`;
 
     const userMessage: Message = {
-      id: Date.now().toString(),
+      id: messageId,
       role: "user",
-      content: inputValue.trim(),
+      content: text.trim(),
       timestamp: new Date(),
     };
 
-    const queryText = inputValue.trim();
-    setMessages((prev) => [...prev, userMessage]);
+    const queryText = text.trim();
+
+    // Check if this exact message already exists to prevent duplicate display
+    setMessages((prev) => {
+      // Check if this message content already exists in recent messages
+      const recentMessages = prev.slice(-5); // Check last 5 messages
+      const isDuplicate = recentMessages.some(
+        (msg) => msg.role === "user" && msg.content === text.trim()
+      );
+
+      if (isDuplicate) {
+        console.log("⚠️ Duplicate user message detected, not adding");
+        return prev;
+      }
+
+      return [...prev, userMessage];
+    });
+
     setInputValue("");
     setIsTyping(true);
 
@@ -198,8 +628,13 @@ export default function ChatPage() {
           ? data
           : data.response || data.answer || JSON.stringify(data);
 
+      // Generate unique ID for AI message
+      const aiMessageId = `${Date.now() + 1}-${Math.random()
+        .toString(36)
+        .substr(2, 9)}`;
+
       const aiMessage: Message = {
-        id: (Date.now() + 1).toString(),
+        id: aiMessageId,
         role: "assistant",
         content: responseText,
         timestamp: new Date(),
@@ -219,7 +654,53 @@ export default function ChatPage() {
           : undefined,
       };
 
-      setMessages((prev) => [...prev, aiMessage]);
+      // Check if this AI response already exists to prevent duplicate display
+      setMessages((prev) => {
+        // Check if this exact response already exists in recent messages
+        const recentMessages = prev.slice(-5); // Check last 5 messages
+        const isDuplicate = recentMessages.some(
+          (msg) => msg.role === "assistant" && msg.content === responseText
+        );
+
+        if (isDuplicate) {
+          console.log("⚠️ Duplicate AI message detected, not adding");
+          return prev;
+        }
+
+        return [...prev, aiMessage];
+      });
+
+      // If user used voice input, speak the response
+      // Use ref to avoid closure issues with state
+      // IMPORTANT: Check and capture the flag value BEFORE any async operations
+      const shouldSpeak = usedVoiceInputRef.current && responseText.trim();
+
+      if (shouldSpeak) {
+        console.log("🔊 Speaking response (voice input was used)");
+        // Don't reset the flag yet - wait until after speaking completes
+        try {
+          await speak(responseText);
+          console.log("✅ Speech completed, resetting voice input flag");
+        } catch (error) {
+          console.error("Error speaking response:", error);
+        } finally {
+          // Only reset after speaking completes (or fails)
+          setUsedVoiceInput(false);
+          usedVoiceInputRef.current = false;
+        }
+      } else {
+        console.log(
+          "🔇 Not speaking (text input was used or no response text). Voice flag:",
+          usedVoiceInputRef.current
+        );
+        // Only reset if we're not speaking (to avoid race conditions)
+        // But be careful - if there's another request pending, don't reset yet
+        // Actually, let's only reset if we're sure this is a text input
+        if (!usedVoiceInputRef.current) {
+          // This was definitely text input, safe to reset
+          setUsedVoiceInput(false);
+        }
+      }
     } catch (error) {
       console.error("Error querying:", error);
       const errorMessage: Message = {
@@ -233,19 +714,14 @@ export default function ChatPage() {
       setMessages((prev) => [...prev, errorMessage]);
     } finally {
       setIsTyping(false);
+      pendingRequestRef.current = false; // Reset pending flag
     }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      handleSendMessage();
-    }
-  };
-
-  const handleMicClick = () => {
-    setIsRecording(!isRecording);
-  };
+  // Update the ref so stopRecording can call handleSendMessageWithText
+  useEffect(() => {
+    stopRecordingRef.current = handleSendMessageWithText;
+  }, []);
 
   const handleExampleQuestion = (question: string) => {
     setInputValue(question);
@@ -566,7 +1042,24 @@ export default function ChatPage() {
               {isRecording && (
                 <div className="mt-3 flex items-center gap-2 text-xs text-slate-400">
                   <VoiceWaveform isActive={true} />
-                  <span>Recording... Click again to stop</span>
+                  <span>
+                    Recording... Will stop and send automatically after 1 second
+                    of silence
+                  </span>
+                </div>
+              )}
+
+              {/* Text-to-Speech Indicator */}
+              {isSpeaking && (
+                <div className="mt-3 flex items-center gap-2 text-xs text-slate-400">
+                  <VoiceWaveform isActive={true} />
+                  <span>AI is speaking...</span>
+                  <button
+                    onClick={stopSpeaking}
+                    className="ml-2 px-2 py-1 rounded bg-red-500/20 hover:bg-red-500/30 text-red-400 text-xs transition-colors"
+                  >
+                    Stop
+                  </button>
                 </div>
               )}
             </div>
