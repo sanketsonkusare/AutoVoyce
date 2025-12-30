@@ -9,6 +9,7 @@ from src.agents.youtube_retriever_agent import retriever_agent_with_metadata
 from src.utils import session_manager
 from src.utils.event_emitter import event_emitter
 from settings import DEFAULT_TIMEOUT_SECONDS, ELEVENLABS_API_KEY
+from os import getenv
 import asyncio
 import json
 import requests
@@ -16,9 +17,12 @@ import requests
 app = FastAPI()
 
 # Add CORS middleware
+# Get allowed origins from environment variable or use defaults
+ALLOWED_ORIGINS = getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # Frontend URL
+    allow_origins=ALLOWED_ORIGINS,  # Frontend URLs (comma-separated)
     allow_credentials=True,
     allow_methods=["*"],  # Allows all methods (GET, POST, etc.)
     allow_headers=["*"],  # Allows all headers
@@ -454,17 +458,16 @@ async def text_to_speech(request: TTSRequest):
     """
     if not ELEVENLABS_API_KEY:
         raise HTTPException(
-            status_code=500,
-            detail="ELEVENLABS_API_KEY is not configured."
+            status_code=500, detail="ELEVENLABS_API_KEY is not configured."
         )
-    
+
     try:
         text = request.text
         voice_id = request.voice_id
-        
+
         if not text or not text.strip():
             raise HTTPException(status_code=400, detail="Text is required")
-        
+
         # Call ElevenLabs TTS API
         response = requests.post(
             f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
@@ -482,32 +485,36 @@ async def text_to_speech(request: TTSRequest):
             },
             timeout=30,
         )
-        
+
         if response.status_code != 200:
             error_detail = response.text
             try:
                 error_json = response.json()
-                error_detail = error_json.get("detail", {}).get("message", error_detail) if isinstance(error_json.get("detail"), dict) else str(error_json.get("detail", error_detail))
+                error_detail = (
+                    error_json.get("detail", {}).get("message", error_detail)
+                    if isinstance(error_json.get("detail"), dict)
+                    else str(error_json.get("detail", error_detail))
+                )
             except Exception:
                 pass
             raise HTTPException(
                 status_code=response.status_code,
-                detail=f"Failed to generate speech: {error_detail}"
+                detail=f"Failed to generate speech: {error_detail}",
             )
-        
+
         # Return audio as MP3
         from fastapi.responses import Response as FastAPIResponse
+
         return FastAPIResponse(
             content=response.content,
             media_type="audio/mpeg",
             headers={
                 "Content-Disposition": "inline; filename=speech.mp3",
-            }
+            },
         )
     except requests.exceptions.RequestException as e:
         raise HTTPException(
-            status_code=500,
-            detail=f"Error connecting to ElevenLabs API: {str(e)}"
+            status_code=500, detail=f"Error connecting to ElevenLabs API: {str(e)}"
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
@@ -515,5 +522,7 @@ async def text_to_speech(request: TTSRequest):
 
 if __name__ == "__main__":
     import uvicorn
+    import os
 
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)

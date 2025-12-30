@@ -206,8 +206,7 @@ export default function ChatPage() {
       abortControllerRef.current = new AbortController();
 
       // Get voice ID from environment or use default
-      const voiceId =
-        process.env.NEXT_PUBLIC_ELEVENLABS_VOICE_ID || "JBFqnCBsd6RMkjVDRZzb";
+      const voiceId = process.env.NEXT_PUBLIC_ELEVENLABS_VOICE_ID;
 
       console.log("📞 Calling TTS endpoint:", API_ENDPOINTS.TTS);
 
