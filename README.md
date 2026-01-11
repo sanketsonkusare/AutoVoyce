@@ -1,6 +1,6 @@
-# AutoVoyce
+# AutoVoyce Backend
 
-AutoVoyce is a FastAPI application that processes YouTube videos, extracts transcripts, and stores them in Pinecone for querying.
+FastAPI backend application that processes YouTube videos, extracts transcripts, and stores them in Pinecone for querying.
 
 ## Prerequisites
 
@@ -24,6 +24,7 @@ brew install uv
 ### 2. Install Dependencies
 
 ```bash
+cd backend
 uv sync
 ```
 
@@ -31,7 +32,7 @@ This will install all dependencies specified in `pyproject.toml` and create a vi
 
 ### 3. Create Environment File
 
-Create a `.env` file in the project root with the following variables:
+Create a `.env` file in the `backend/` directory with the following variables:
 
 ```env
 GOOGLE_API_KEY=your_google_api_key_here
@@ -121,7 +122,7 @@ uv run pytest
 ### Project Structure
 
 ```
-AutoVoyce/
+backend/
 ├── src/
 │   ├── agents/          # LangChain agents
 │   ├── main/            # FastAPI application
@@ -139,3 +140,5 @@ AutoVoyce/
 - **Import errors**: Make sure you've activated the virtual environment or are using `uv run`
 - **API key errors**: Verify all environment variables are set correctly in `.env`
 - **Port already in use**: Change the port in the uvicorn command (e.g., `--port 8001`)
+- **CORS errors**: The backend is configured to allow requests from `http://localhost:3000` (frontend)
+
