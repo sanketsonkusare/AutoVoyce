@@ -18,7 +18,7 @@ app = FastAPI()
 
 # Add CORS middleware
 # Get allowed origins from environment variable or use defaults
-ALLOWED_ORIGINS = getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
+ALLOWED_ORIGINS = getenv("ALLOWED_ORIGINS", "*").split(",")
 
 app.add_middleware(
     CORSMiddleware,
@@ -184,9 +184,15 @@ async def process_selected_videos(
                 load_dotenv(".env")
                 print(f"✅ Environment loaded", flush=True)
 
+                # Convert video IDs to video URLs
+                video_urls = [
+                    f"https://www.youtube.com/watch?v={video_id}"
+                    for video_id in request.video_ids
+                ]
+
                 initial_state = {
                     "user_query": "",  # Not needed for processing
-                    "video_ids": request.video_ids,
+                    "video_urls": video_urls,
                     "transcript": "",
                     "namespace": namespace,
                     "session_id": session_id,  # Pass session_id to workflow for event emission
@@ -195,7 +201,7 @@ async def process_selected_videos(
                     f"🚀 Starting processing workflow for session: {session_id} with {len(request.video_ids)} videos",
                     flush=True,
                 )
-                print(f"📋 Video IDs: {request.video_ids}", flush=True)
+                print(f"📋 Video URLs: {video_urls}", flush=True)
 
                 # Update last access at start of processing to prevent cleanup
                 session_manager.update_last_access(session_id)

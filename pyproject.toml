@@ -25,4 +25,10 @@ dependencies = [
     "fastapi>=0.124.4",
     "uvicorn>=0.38.0",
     "requests>=2.31.0",
+    "google-api-python-client>=2.187.0",
+    "google-auth-oauthlib>=1.0.0",
+    "google-auth-httplib2>=0.1.0",
+    "srt>=3.5.3",
+    "yt-dlp>=2024.0.0",
+    "openai-whisper>=20231117",
 ]
