@@ -8,17 +8,18 @@ from src.agents.pinecone_query_agent import query_agent
 from src.agents.youtube_retriever_agent import retriever_agent_with_metadata
 from src.utils import session_manager
 from src.utils.event_emitter import event_emitter
-from settings import DEFAULT_TIMEOUT_SECONDS, ELEVENLABS_API_KEY
+from settings import DEFAULT_TIMEOUT_SECONDS
 from os import getenv
 import asyncio
 import json
-import requests
 
 app = FastAPI()
 
 # Add CORS middleware
-# Get allowed origins from environment variable or use defaults
-ALLOWED_ORIGINS = getenv("ALLOWED_ORIGINS", "*").split(",")
+# Get allowed origins from environment variable or use defaults for local development
+# Note: Cannot use "*" with credentials=True, must specify explicit origins
+ALLOWED_ORIGINS_DEFAULT = "http://localhost:3000,http://127.0.0.1:3000,http://localhost:8000,http://127.0.0.1:8000"
+ALLOWED_ORIGINS = getenv("ALLOWED_ORIGINS", ALLOWED_ORIGINS_DEFAULT).split(",")
 
 app.add_middleware(
     CORSMiddleware,
@@ -392,138 +393,79 @@ def query_endpoint(
 @app.get("/scribe-token")
 async def get_scribe_token():
     """
-    Generate a single-use token for ElevenLabs Realtime Speech-to-Text API.
-    This token is used by the frontend to connect to ElevenLabs' realtime transcription service.
+    This endpoint was used for ElevenLabs Realtime Speech-to-Text.
+    Since we've switched to Edge TTS, this endpoint is deprecated.
+    The frontend should use Web Speech API for speech-to-text instead.
     """
-    if not ELEVENLABS_API_KEY:
-        print("❌ ELEVENLABS_API_KEY is not set")
-        raise HTTPException(
-            status_code=500,
-            detail="ELEVENLABS_API_KEY is not configured. Please set it in your environment variables.",
-        )
-
-    try:
-        print(f"🔑 Requesting scribe token from ElevenLabs API...")
-        response = requests.post(
-            "https://api.elevenlabs.io/v1/single-use-token/realtime_scribe",
-            headers={
-                "xi-api-key": ELEVENLABS_API_KEY,
-            },
-            timeout=10,
-        )
-
-        print(f"📡 ElevenLabs API response status: {response.status_code}")
-
-        if response.status_code != 200:
-            error_detail = response.text
-            try:
-                error_json = response.json()
-                if isinstance(error_json, dict):
-                    error_detail = (
-                        error_json.get("detail", {}).get("message", error_detail)
-                        if isinstance(error_json.get("detail"), dict)
-                        else str(error_json.get("detail", error_detail))
-                    )
-                else:
-                    error_detail = str(error_json)
-            except Exception as e:
-                print(f"⚠️ Could not parse error JSON: {e}")
-                pass
-            print(f"❌ ElevenLabs API error: {error_detail}")
-            raise HTTPException(
-                status_code=response.status_code,
-                detail=f"Failed to generate scribe token: {error_detail}",
-            )
-
-        data = response.json()
-        token = data.get("token")
-
-        if not token:
-            print("❌ No token in response")
-            raise HTTPException(
-                status_code=500, detail="No token returned from ElevenLabs API"
-            )
-
-        print("✅ Scribe token generated successfully")
-        return {"token": token}
-    except requests.exceptions.RequestException as e:
-        print(f"❌ Request exception: {str(e)}")
-        raise HTTPException(
-            status_code=500, detail=f"Error connecting to ElevenLabs API: {str(e)}"
-        )
-    except Exception as e:
-        print(f"❌ Unexpected error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+    print("⚠️ /scribe-token endpoint called - This is deprecated (ElevenLabs removed)")
+    raise HTTPException(
+        status_code=501,
+        detail="ElevenLabs integration has been removed. Use Web Speech API for speech-to-text.",
+    )
 
 
 @app.post("/tts")
 async def text_to_speech(request: TTSRequest):
     """
-    Convert text to speech using ElevenLabs TTS API.
+    Convert text to speech using Microsoft Edge TTS (free, no API key needed).
     Returns audio as MP3.
     """
-    if not ELEVENLABS_API_KEY:
-        raise HTTPException(
-            status_code=500, detail="ELEVENLABS_API_KEY is not configured."
-        )
-
+    import edge_tts
+    import tempfile
+    import os
+    
+    print(f"🔊 TTS request received")
+    
     try:
         text = request.text
-        voice_id = request.voice_id
+        # Map common voice IDs to Edge TTS voices, or use default
+        voice_mapping = {
+            "21m00Tcm4TlvDq8ikWAM": "en-US-AriaNeural",  # Default female
+            "EXAVITQu4vr4xnSDxMaL": "en-US-GuyNeural",   # Male voice
+            "en-US-Neural2-F": "en-US-AriaNeural",
+            "en-US-Neural2-D": "en-US-GuyNeural",
+        }
+        voice = voice_mapping.get(request.voice_id, "en-US-AriaNeural")
+        
+        print(f"🔊 Processing TTS: voice={voice}, text_length={len(text) if text else 0}")
 
         if not text or not text.strip():
             raise HTTPException(status_code=400, detail="Text is required")
-
-        # Call ElevenLabs TTS API
-        response = requests.post(
-            f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
-            headers={
-                "xi-api-key": ELEVENLABS_API_KEY,
-                "Content-Type": "application/json",
-            },
-            json={
-                "text": text,
-                "model_id": "eleven_multilingual_v2",
-                "voice_settings": {
-                    "stability": 0.5,
-                    "similarity_boost": 0.8,
-                },
-            },
-            timeout=30,
-        )
-
-        if response.status_code != 200:
-            error_detail = response.text
-            try:
-                error_json = response.json()
-                error_detail = (
-                    error_json.get("detail", {}).get("message", error_detail)
-                    if isinstance(error_json.get("detail"), dict)
-                    else str(error_json.get("detail", error_detail))
-                )
-            except Exception:
-                pass
-            raise HTTPException(
-                status_code=response.status_code,
-                detail=f"Failed to generate speech: {error_detail}",
-            )
-
+        
+        # Generate speech using Edge TTS
+        print(f"🎤 Generating speech with Edge TTS...")
+        communicate = edge_tts.Communicate(text, voice)
+        
+        # Create temporary file for audio
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_file:
+            tmp_path = tmp_file.name
+        
+        await communicate.save(tmp_path)
+        
+        # Read the audio file
+        with open(tmp_path, "rb") as audio_file:
+            audio_content = audio_file.read()
+        
+        # Clean up temp file
+        os.unlink(tmp_path)
+        
+        print(f"✅ TTS completed, audio size: {len(audio_content)} bytes")
+        
         # Return audio as MP3
         from fastapi.responses import Response as FastAPIResponse
-
         return FastAPIResponse(
-            content=response.content,
+            content=audio_content,
             media_type="audio/mpeg",
             headers={
                 "Content-Disposition": "inline; filename=speech.mp3",
             },
         )
-    except requests.exceptions.RequestException as e:
-        raise HTTPException(
-            status_code=500, detail=f"Error connecting to ElevenLabs API: {str(e)}"
-        )
+        
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+        print(f"❌ TTS Error: {type(e).__name__}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"TTS error: {str(e)}")
 
 
 if __name__ == "__main__":
