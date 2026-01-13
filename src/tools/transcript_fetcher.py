@@ -23,19 +23,27 @@ def get_transcript_from_api(video_id: str) -> str:
     """
     Try to fetch transcript using YouTube's caption API.
     This is instant and doesn't require downloading/transcribing.
-    Uses cookies if available to bypass rate limits.
+    
+    Uses proxy config from environment if available for rate limit bypass.
     """
-    from settings import YOUTUBE_COOKIES_PATH
+    from settings import WEBSHARE_PROXY_USERNAME, WEBSHARE_PROXY_PASSWORD
     
     try:
-        # Use cookies if available (helps with rate limiting)
-        cookies = YOUTUBE_COOKIES_PATH if YOUTUBE_COOKIES_PATH and os.path.exists(YOUTUBE_COOKIES_PATH) else None
-        
-        if cookies:
-            print(f"🍪 Using cookies for transcript API")
+        # Initialize API with proxy if credentials available
+        if WEBSHARE_PROXY_USERNAME and WEBSHARE_PROXY_PASSWORD:
+            from youtube_transcript_api.proxies import WebshareProxyConfig
+            print(f"🔀 Using Webshare rotating proxies")
+            ytt_api = YouTubeTranscriptApi(
+                proxy_config=WebshareProxyConfig(
+                    proxy_username=WEBSHARE_PROXY_USERNAME,
+                    proxy_password=WEBSHARE_PROXY_PASSWORD,
+                )
+            )
+        else:
+            ytt_api = YouTubeTranscriptApi()
         
         # Try to get transcript (auto-generated or manual captions)
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id, cookies=cookies)
+        transcript_list = ytt_api.list(video_id)
         
         # Prefer manual transcripts, fall back to auto-generated
         try:
@@ -44,13 +52,13 @@ def get_transcript_from_api(video_id: str) -> str:
             try:
                 transcript = transcript_list.find_generated_transcript(['en'])
             except:
-                # Try any available transcript and translate to English
+                # Try any available transcript
                 transcript = transcript_list.find_transcript(['en', 'en-US', 'en-GB'])
         
         # Fetch and format
-        transcript_data = transcript.fetch()
+        fetched_transcript = transcript.fetch()
         formatter = TextFormatter()
-        return formatter.format_transcript(transcript_data)
+        return formatter.format_transcript(fetched_transcript)
         
     except Exception as e:
         raise Exception(f"No captions available: {str(e)}")

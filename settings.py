@@ -30,3 +30,8 @@ if YOUTUBE_COOKIES_CONTENT and not YOUTUBE_COOKIES_PATH:
     cookies_file.write_text(YOUTUBE_COOKIES_CONTENT)
     YOUTUBE_COOKIES_PATH = str(cookies_file)
     print(f"🍪 Created cookies file at: {YOUTUBE_COOKIES_PATH}")
+
+# Webshare rotating proxy credentials (for youtube-transcript-api rate limit bypass)
+# Get these from: https://www.webshare.io/ (Residential proxy package)
+WEBSHARE_PROXY_USERNAME = getenv("WEBSHARE_PROXY_USERNAME", "")
+WEBSHARE_PROXY_PASSWORD = getenv("WEBSHARE_PROXY_PASSWORD", "")
