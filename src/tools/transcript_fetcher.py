@@ -64,14 +64,14 @@ def get_transcript_from_api(video_id: str) -> str:
         raise Exception(f"No captions available: {str(e)}")
 
 
-def get_transcript_with_whisper(video_url: str, model_size: str = "tiny") -> str:
+def get_transcript_with_groq_whisper(video_url: str) -> str:
     """
-    Fallback: Download audio and transcribe with Whisper.
-    Uses 'tiny' model for speed on CPU.
+    Fallback: Download audio and transcribe with Groq Whisper API.
+    Much faster than local Whisper - transcribes in seconds on Groq's LPU.
     """
     import yt_dlp
-    import whisper
-    from settings import YOUTUBE_COOKIES_PATH
+    from groq import Groq
+    from settings import GROQ_API_KEY, YOUTUBE_COOKIES_PATH
     
     output_filename = f"temp_audio_{os.getpid()}"
     
@@ -81,7 +81,7 @@ def get_transcript_with_whisper(video_url: str, model_size: str = "tiny") -> str
             {
                 "key": "FFmpegExtractAudio",
                 "preferredcodec": "mp3",
-                "preferredquality": "64",  # Lower quality for faster processing
+                "preferredquality": "64",  # Lower quality for faster upload
             }
         ],
         "outtmpl": output_filename,
@@ -94,16 +94,22 @@ def get_transcript_with_whisper(video_url: str, model_size: str = "tiny") -> str
         print(f"🍪 Using cookies from: {YOUTUBE_COOKIES_PATH}")
 
     try:
-        print(f"⬇️ Downloading audio (Whisper fallback)...")
+        print(f"⬇️ Downloading audio (Groq Whisper fallback)...")
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([video_url])
 
-        print(f"🤖 Loading Whisper model ('{model_size}')...")
-        model = whisper.load_model(model_size)
-
-        print("📝 Transcribing audio...")
-        result = model.transcribe(f"{output_filename}.mp3")
-        return result["text"]
+        print(f"🤖 Transcribing with Groq Whisper API...")
+        client = Groq(api_key=GROQ_API_KEY)
+        
+        with open(f"{output_filename}.mp3", "rb") as audio_file:
+            transcription = client.audio.transcriptions.create(
+                file=audio_file,
+                model="whisper-large-v3",
+                response_format="text"
+            )
+        
+        print("✅ Transcription complete!")
+        return transcription
 
     finally:
         if os.path.exists(f"{output_filename}.mp3"):
@@ -137,11 +143,11 @@ def transcript_fetcher(video_url: str) -> str:
     except Exception as e:
         print(f"⚠️ Captions not available: {e}")
     
-    # Try 2: Whisper fallback (slow but works for any video)
+    # Try 2: Groq Whisper fallback (fast cloud transcription)
     try:
-        print("🔄 Falling back to Whisper transcription...")
-        transcript = get_transcript_with_whisper(video_url, model_size="tiny")
-        print("✅ Got transcript from Whisper!")
+        print("🔄 Falling back to Groq Whisper transcription...")
+        transcript = get_transcript_with_groq_whisper(video_url)
+        print("✅ Got transcript from Groq Whisper!")
         return transcript
     except Exception as e:
         return f"Error: Could not get transcript. {str(e)}"
