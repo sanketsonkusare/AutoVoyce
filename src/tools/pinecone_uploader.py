@@ -1,14 +1,23 @@
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_experimental.text_splitter import SemanticChunker
-from src.utils.pinecone_vector_index import PineconeVectorIndex
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from pinecone import Pinecone
+from settings import PINECONE_API_KEY, PINECONE_INDEX_NAME, PINECONE_HOST_URL
 from src.utils.event_emitter import event_emitter
 from langchain.tools import tool
+import uuid
+import logging
+import time
+
+logger = logging.getLogger("autovoyce.uploader")
+
+# Max records per upsert_records batch (Pinecone integrated inference limit)
+_BATCH_SIZE = 96
+
 
 @tool
 def upload_transcript_to_pinecone(transcript: str, namespace: str = "youtube_transcripts", session_id: str = "") -> str:
     """
     Uploads a YouTube transcript to the Pinecone vector database.
-    Useful when you need to store transcript text for later retrieval or Q&A.
+    Uses Pinecone integrated inference — embeddings are generated server-side.
     
     Args:
         transcript: The transcript text to upload
@@ -24,47 +33,70 @@ def upload_transcript_to_pinecone(transcript: str, namespace: str = "youtube_tra
         return "No transcript found to upload."
 
     try:
-        # Initialize Embeddings
-        print("Initializing Embedding Model (sentence-transformers/all-MiniLM-L6-v2)...")
-        if session_id:
-            event_emitter.emit(session_id, "embedding_model_init", "Initializing Embedding Model (sentence-transformers/all-MiniLM-L6-v2)...")
-        embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-        
-        # Initialize Vector Index Wrapper
-        vector_index = PineconeVectorIndex(embeddings, session_id=session_id)
-        
-        # Define Chunker
-        chunker = SemanticChunker(
-            embeddings,
-            breakpoint_threshold_type="percentile"  # 95th percentile similarity threshold
+        # Initialize Pinecone index
+        pc = Pinecone(api_key=PINECONE_API_KEY)
+        index = pc.Index(host=PINECONE_HOST_URL)
+
+        # Chunk the transcript using RecursiveCharacterTextSplitter
+        # (no local embeddings needed — Pinecone handles embedding server-side)
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=500,
+            chunk_overlap=50,
+            separators=["\n\n", "\n", ". ", " ", ""],
         )
         
-        def chunker_wrapper(text: str):
-            chunks = chunker.split_text(transcript)
-            return chunks
+        if session_id:
+            event_emitter.emit(session_id, "chunking_text", "Splitting transcript into chunks...")
         
-        # Upload to specified namespace
+        chunks = splitter.split_text(transcript)
+        
+        if not chunks:
+            return "No text chunks to upload."
+
+        # Build records for Pinecone integrated inference
+        # Each record has an _id and chunk_text (auto-embedded by Pinecone)
+        records = []
+        for i, chunk_text in enumerate(chunks):
+            records.append({
+                "_id": str(uuid.uuid4()),
+                "chunk_text": chunk_text,
+                "chunk_id": i,
+                "source": "uploaded_document",
+            })
+
+        # Upsert in batches of _BATCH_SIZE (Pinecone integrated inference limit)
         print(f"Uploading transcript to Pinecone (Namespace: {namespace})...")
         if session_id:
-            event_emitter.emit(session_id, "pinecone_uploading", f"Uploading transcript to Pinecone (Namespace: {namespace})...")
+            event_emitter.emit(session_id, "pinecone_uploading", f"Uploading {len(records)} chunks to Pinecone (Namespace: {namespace})...")
         
-        vector_index.create_or_load_vector_index(
-            markdown_text=transcript,
-            chunker=chunker_wrapper,
-            namespace=namespace
-        )
-        
-        success_msg = f"Transcript successfully uploaded to Pinecone namespace '{namespace}'."
+        total_uploaded = 0
+        for batch_start in range(0, len(records), _BATCH_SIZE):
+            batch = records[batch_start : batch_start + _BATCH_SIZE]
+            index.upsert_records(namespace, batch)
+            total_uploaded += len(batch)
+            logger.info(f"Uploaded batch {batch_start // _BATCH_SIZE + 1}: {len(batch)} records")
+
+        # Small delay to let Pinecone index the records
+        time.sleep(2)
+
+        success_msg = f"Uploaded {total_uploaded} chunks to Pinecone index '{PINECONE_INDEX_NAME}' in namespace '{namespace}'"
         print(success_msg)
-        return success_msg
+        
+        if session_id:
+            event_emitter.emit(session_id, "chunks_uploaded", success_msg, {
+                "chunk_count": total_uploaded,
+                "namespace": namespace
+            })
+        
+        return f"Transcript successfully uploaded to Pinecone namespace '{namespace}'."
         
     except Exception as e:
         error_msg = f"Error uploading to Pinecone: {str(e)}"
         print(error_msg)
-        # Import traceback to print full stack trace for debugging
         import traceback
         traceback.print_exc()
         return error_msg
+
 
 if __name__ == "__main__":
     # Test execution

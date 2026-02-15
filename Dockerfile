@@ -1,12 +1,10 @@
 # ============================================================
 # AutoVoyce Backend — Production Dockerfile
 # ============================================================
-# Multi-stage build: installs deps in builder, copies to slim runtime.
-# Uses CPU-only PyTorch to keep image size small (~3-4GB vs ~13GB).
+# Uses Pinecone integrated inference (no local PyTorch needed).
 # Runs as non-root user with health check and multi-worker uvicorn.
 # ============================================================
 
-# --- Stage 1: Builder ---
 FROM python:3.12-slim AS builder
 
 WORKDIR /build
@@ -17,24 +15,17 @@ RUN pip install --no-cache-dir uv
 # Copy dependency file first (cache layer)
 COPY requirements.txt .
 
-# 1) Install CPU-only PyTorch FIRST (avoids pulling ~10GB of CUDA libraries)
-RUN uv pip install --system --no-cache \
-    torch \
-    --index-url https://download.pytorch.org/whl/cpu
-
-# 2) Install remaining dependencies (they will find torch already present)
+# Install Python dependencies (no PyTorch needed — Pinecone handles embeddings)
 RUN uv pip install --system --no-cache -r requirements.txt
 
 
-# --- Stage 2: Runtime ---
+# --- Runtime ---
 FROM python:3.12-slim
 
 # Install system dependencies
-#   - ffmpeg: may be needed for audio processing
 #   - curl: for Docker health check
 #   - ca-certificates: for HTTPS proxy connections (Webshare)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg \
     curl \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
@@ -70,7 +61,6 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:${PORT}/health || exit 1
 
 # Run with 4 workers for production concurrency
-# Workers = 2 * CPU cores + 1 is the general rule; 4 is safe for 2-core EC2 instances
 CMD uvicorn src.main.main:app \
     --host 0.0.0.0 \
     --port $PORT \
