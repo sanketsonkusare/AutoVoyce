@@ -1,7 +1,8 @@
 # ============================================================
-# AutoVoyce Backend — Production Dockerfile for AWS EC2
+# AutoVoyce Backend — Production Dockerfile
 # ============================================================
 # Multi-stage build: installs deps in builder, copies to slim runtime.
+# Uses CPU-only PyTorch to keep image size small (~3-4GB vs ~13GB).
 # Runs as non-root user with health check and multi-worker uvicorn.
 # ============================================================
 
@@ -16,7 +17,12 @@ RUN pip install --no-cache-dir uv
 # Copy dependency file first (cache layer)
 COPY requirements.txt .
 
-# Install Python dependencies into system site-packages
+# 1) Install CPU-only PyTorch FIRST (avoids pulling ~10GB of CUDA libraries)
+RUN uv pip install --system --no-cache \
+    torch \
+    --index-url https://download.pytorch.org/whl/cpu
+
+# 2) Install remaining dependencies (they will find torch already present)
 RUN uv pip install --system --no-cache -r requirements.txt
 
 
