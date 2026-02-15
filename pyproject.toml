@@ -20,7 +20,6 @@ dependencies = [
     "tiktoken>=0.12.0",
     "langchain-experimental>=0.4.0",
     "pinecone>=5.0.0",
-    "langchain-groq>=1.1.0",
     "pydantic>=2.12.5",
     "fastapi>=0.124.4",
     "uvicorn>=0.38.0",
@@ -28,9 +27,5 @@ dependencies = [
     "google-api-python-client>=2.187.0",
     "google-auth-oauthlib>=1.0.0",
     "google-auth-httplib2>=0.1.0",
-    "srt>=3.5.3",
-    "yt-dlp>=2024.0.0",
-    "groq>=0.4.0",
-    "google-cloud-texttospeech>=2.33.0",
     "edge-tts>=7.2.7",
 ]

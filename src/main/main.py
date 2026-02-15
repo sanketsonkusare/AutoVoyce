@@ -10,46 +10,71 @@ from src.utils import session_manager
 from src.utils.event_emitter import event_emitter
 from settings import DEFAULT_TIMEOUT_SECONDS
 from os import getenv
+from concurrent.futures import ThreadPoolExecutor
 import asyncio
 import json
+import logging
 
-app = FastAPI()
+# --- Logging Setup ---
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger("autovoyce")
 
-# Add CORS middleware
-# Get allowed origins from environment variable or use defaults for local development
-# Note: Cannot use "*" with credentials=True, must specify explicit origins
+# --- Shared Thread Pool ---
+# Single shared executor for all background processing (bounded to prevent resource leaks)
+_background_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="autovoyce-worker")
+
+app = FastAPI(title="AutoVoyce API", version="1.0.0")
+
+# --- CORS ---
 ALLOWED_ORIGINS_DEFAULT = "http://localhost:3000,http://127.0.0.1:3000,http://localhost:8000,http://127.0.0.1:8000"
 ALLOWED_ORIGINS = getenv("ALLOWED_ORIGINS", ALLOWED_ORIGINS_DEFAULT).split(",")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,  # Frontend URLs (comma-separated)
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],  # Allows all methods (GET, POST, etc.)
-    allow_headers=["*"],  # Allows all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
+# --- Request Models ---
 class QueryRequest(BaseModel):
     user_query: str
-    session_id: Optional[str] = None  # Allow session_id in request body
+    session_id: Optional[str] = None
 
 
 class ProcessRequest(BaseModel):
     video_ids: List[str]
-    session_id: Optional[str] = None  # Allow session_id in request body
+    session_id: Optional[str] = None
 
 
 class TTSRequest(BaseModel):
     text: str
-    voice_id: Optional[str] = "JBFqnCBsd6RMkjVDRZzb"  # Default: Allison
+    voice_id: Optional[str] = "JBFqnCBsd6RMkjVDRZzb"
 
 
+# --- Health Check ---
 @app.get("/")
 def read_root():
     return {"message": "AutoVoyce API is running"}
 
 
+@app.get("/health")
+def health_check():
+    """Health check endpoint for uptime monitoring and load balancers."""
+    return {
+        "status": "healthy",
+        "active_sessions": len(session_manager.get_all_sessions()),
+        "executor_threads": _background_executor._max_workers,
+    }
+
+
+# --- Video Search ---
 @app.post("/upload")
 async def search_videos(request: QueryRequest, response: Response):
     """
@@ -57,54 +82,78 @@ async def search_videos(request: QueryRequest, response: Response):
     Creates a new session and returns video list for user selection.
     """
     try:
-        # Create new session
         session_id, namespace = session_manager.create_session()
 
-        # Set session cookie
         response.set_cookie(
             key="session_id",
             value=session_id,
-            httponly=False,  # Allow JavaScript access for debugging
-            samesite="none",  # Required for cross-origin cookies
-            secure=False,  # Set to True in production with HTTPS
-            max_age=86400,  # 24 hours
+            httponly=False,
+            samesite="none",
+            secure=False,
+            max_age=86400,
         )
-        print(f"✅ Set cookie for session: {session_id} with namespace: {namespace}")
-        print(
-            f"📋 Created session, all sessions now: {session_manager.get_all_sessions()}"
+        logger.info(f"Created session {session_id} -> namespace {namespace}")
+
+        # Run blocking search in thread pool to avoid blocking event loop
+        loop = asyncio.get_event_loop()
+        videos = await loop.run_in_executor(
+            _background_executor, retriever_agent_with_metadata, request.user_query
         )
 
-        # Search for videos with metadata
-        videos = retriever_agent_with_metadata(request.user_query)
-
-        # Verify session still exists after search
         namespace_check = session_manager.get_namespace(session_id)
         if not namespace_check:
-            print(f"⚠️ WARNING: Session {session_id} was lost after search!")
-        else:
-            print(f"✅ Session {session_id} still exists after search")
+            logger.warning(f"Session {session_id} was lost after search!")
 
-        # Return video list for user selection
-        response_data = {
+        logger.info(f"Search complete for session {session_id}: {len(videos)} videos found")
+        return {
             "session_id": session_id,
             "namespace": namespace,
             "status": "search_complete",
             "videos": videos,
             "message": f"Found {len(videos)} videos. Please select which ones to process.",
         }
-
-        print(
-            f"Returning video list for session: {session_id}, found {len(videos)} videos"
-        )
-        return response_data
     except Exception as e:
-        print(f"Error in upload endpoint: {str(e)}")
-        import traceback
-
-        traceback.print_exc()
+        logger.error(f"Error in /upload: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# --- Transcript Fetching ---
+@app.get("/transcript/{video_id}")
+async def get_transcript(video_id: str):
+    """
+    Fetch transcript for a single video using youtube-transcript-api.
+    Uses Webshare proxy if configured.
+    """
+    try:
+        from src.tools.transcript_fetcher import get_transcript_from_api
+
+        logger.info(f"Fetching transcript for video: {video_id}")
+
+        # Run blocking transcript fetch in thread pool
+        loop = asyncio.get_event_loop()
+        transcript = await loop.run_in_executor(
+            _background_executor, get_transcript_from_api, video_id
+        )
+
+        if not transcript or transcript.strip() == "":
+            raise HTTPException(status_code=404, detail="No transcript available for this video")
+
+        logger.info(f"Got transcript for {video_id}: {len(transcript)} chars")
+        return {
+            "transcript": transcript,
+            "video_id": video_id,
+            "segments": len(transcript.split(". ")),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Transcript fetch failed for {video_id}: {e}")
+        if "No captions available" in str(e) or "Transcript is disabled" in str(e):
+            raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- Video Processing ---
 @app.post("/upload/process")
 async def process_selected_videos(
     request: ProcessRequest,
@@ -112,36 +161,25 @@ async def process_selected_videos(
     cookie_session_id: Optional[str] = Cookie(None, alias="session_id"),
 ):
     """
-    Phase 2: Processes selected videos (transcript extraction and Pinecone upload).
-    Takes selected video_ids and processes them in background.
+    Phase 2: Processes selected videos (transcript extraction + Pinecone upload).
+    Runs in background thread; frontend connects to SSE for progress.
     """
     try:
-        # Get session_id from request body or cookie
         session_id = request.session_id or cookie_session_id
 
-        print(
-            f"📥 Process request - Body session_id: {request.session_id}, Cookie session_id: {cookie_session_id}"
-        )
-        print(f"📋 All active sessions: {session_manager.get_all_sessions()}")
+        logger.info(f"Process request - session: {session_id}, videos: {len(request.video_ids)}")
 
         if not session_id:
-            print("❌ No session_id found in request body or cookie")
             raise HTTPException(
                 status_code=401,
                 detail="No active session. Please search for videos first.",
             )
 
-        # Keep session alive
         session_manager.update_last_access(session_id)
-
         namespace = session_manager.get_namespace(session_id)
-        print(f"🔍 Looked up namespace for session {session_id}: {namespace}")
 
         if not namespace:
-            print(f"❌ Session {session_id} not found in active sessions")
-            print(
-                f"📋 Available sessions: {list(session_manager.get_all_sessions().keys())}"
-            )
+            logger.warning(f"Session {session_id} not found. Active: {list(session_manager.get_all_sessions().keys())}")
             raise HTTPException(
                 status_code=404,
                 detail="Session not found or expired. Please search for videos again.",
@@ -153,7 +191,6 @@ async def process_selected_videos(
                 detail="No video IDs provided. Please select at least one video.",
             )
 
-        # Set session cookie if not already set
         response.set_cookie(
             key="session_id",
             value=session_id,
@@ -163,123 +200,100 @@ async def process_selected_videos(
             max_age=86400,
         )
 
-        # Start processing workflow in background
-        import asyncio
-        from concurrent.futures import ThreadPoolExecutor
-
         def run_processing_workflow():
-            import sys
-
-            print(f"🔄 BACKGROUND THREAD STARTED for session: {session_id}", flush=True)
+            """Background processing: fetch transcripts → embed → upload to Pinecone."""
+            logger.info(f"[BG] Processing started for session {session_id}")
             event_emitter.emit(
                 session_id,
                 "processing_started",
                 f"Processing started for {len(request.video_ids)} videos",
             )
-            sys.stdout.flush()
 
             try:
-                # Ensure environment variables are loaded in background thread
                 from dotenv import load_dotenv
-
                 load_dotenv(".env")
-                print(f"✅ Environment loaded", flush=True)
 
-                # Convert video IDs to video URLs
                 video_urls = [
-                    f"https://www.youtube.com/watch?v={video_id}"
-                    for video_id in request.video_ids
+                    f"https://www.youtube.com/watch?v={vid}"
+                    for vid in request.video_ids
                 ]
 
                 initial_state = {
-                    "user_query": "",  # Not needed for processing
+                    "user_query": "",
                     "video_urls": video_urls,
                     "transcript": "",
                     "namespace": namespace,
-                    "session_id": session_id,  # Pass session_id to workflow for event emission
+                    "session_id": session_id,
                 }
-                print(
-                    f"🚀 Starting processing workflow for session: {session_id} with {len(request.video_ids)} videos",
-                    flush=True,
-                )
-                print(f"📋 Video URLs: {video_urls}", flush=True)
 
-                # Update last access at start of processing to prevent cleanup
+                logger.info(f"[BG] Running workflow for session {session_id}, {len(request.video_ids)} videos")
                 session_manager.update_last_access(session_id)
-                print(f"✅ Session access updated", flush=True)
 
                 result = processing_workflow.invoke(initial_state)
-                print(
-                    f"✅ Processing workflow completed for session: {session_id}",
-                    flush=True,
-                )
+
+                logger.info(f"[BG] Workflow completed for session {session_id}")
                 event_emitter.emit(
                     session_id,
                     "processing_complete",
                     "All videos processed successfully",
                 )
-
-                # Update last access after processing completes to keep session alive
                 session_manager.update_last_access(session_id)
-                print(f"✅ Updated last access for session: {session_id}", flush=True)
-
                 return result
-            except Exception as e:
-                print(f"❌ Error in processing workflow: {str(e)}", flush=True)
-                import traceback
 
-                traceback.print_exc()
-                sys.stdout.flush()
+            except Exception as e:
+                logger.error(f"[BG] Workflow error for session {session_id}: {e}", exc_info=True)
+                event_emitter.emit(
+                    session_id,
+                    "processing_error",
+                    f"Error: {str(e)}",
+                )
                 raise
 
-        # Run in background thread (fire and forget)
-        print(f"📤 Scheduling background processing for session: {session_id}")
+        # Submit to shared executor (no per-request executor leak)
         loop = asyncio.get_event_loop()
-        executor = ThreadPoolExecutor(max_workers=1)
-        future = loop.run_in_executor(executor, run_processing_workflow)
+        future = loop.run_in_executor(_background_executor, run_processing_workflow)
 
-        # Add error callback to catch any issues
         def handle_future_result(fut):
             try:
-                fut.result()  # This will raise if there was an error
+                fut.result()
             except Exception as e:
-                print(f"❌ Background processing failed: {e}", flush=True)
-                import traceback
-
-                traceback.print_exc()
+                logger.error(f"[BG] Background task failed for session {session_id}: {e}")
 
         future.add_done_callback(handle_future_result)
-        print(f"✅ Background task scheduled", flush=True)
+        logger.info(f"Background task submitted for session {session_id}")
 
-        # Return immediately
-        response_data = {
+        return {
             "session_id": session_id,
             "namespace": namespace,
             "status": "processing",
             "video_count": len(request.video_ids),
             "message": f"Processing {len(request.video_ids)} selected videos. You can start querying in a few moments.",
         }
-
-        print(f"Returning immediate response for processing session: {session_id}")
-        return response_data
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error in process endpoint: {str(e)}")
-        import traceback
-
-        traceback.print_exc()
+        logger.error(f"Error in /upload/process: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# --- Startup ---
 @app.on_event("startup")
 def startup_event():
-    # Start the background cleanup scheduler (checks every 60s, expires after DEFAULT_TIMEOUT_SECONDS)
     session_manager.start_cleanup_scheduler(
         timeout_seconds=int(DEFAULT_TIMEOUT_SECONDS)
     )
+    logger.info("AutoVoyce API started")
 
 
+@app.on_event("shutdown")
+def shutdown_event():
+    """Gracefully shut down the background executor."""
+    logger.info("Shutting down background executor...")
+    _background_executor.shutdown(wait=False)
+    logger.info("AutoVoyce API stopped")
+
+
+# --- SSE Stream ---
 @app.get("/upload/status/{session_id}")
 async def stream_processing_status(session_id: str):
     """
@@ -287,47 +301,33 @@ async def stream_processing_status(session_id: str):
     Frontend connects to this endpoint to receive real-time updates.
     """
     import queue
-    import threading
 
     async def event_generator():
-        # Send initial connection message
         yield f"data: {json.dumps({'type': 'connected', 'message': 'Connected to processing status stream'})}\n\n"
 
-        # Thread-safe queue for events
         event_queue = queue.Queue()
 
         def on_event(event):
-            """Callback to add events to the queue (called from background thread)"""
             event_queue.put(event)
 
-        # Subscribe to events for this session
         event_emitter.subscribe(session_id, on_event)
 
         try:
-            # Send any existing events first
             existing_events = event_emitter.get_events(session_id)
             for event in existing_events:
                 yield f"data: {json.dumps(event)}\n\n"
 
-            # Keep connection alive and stream new events
             while True:
                 try:
-                    # Wait for new event with timeout (non-blocking check)
-                    try:
-                        event = event_queue.get(timeout=1.0)
-                        yield f"data: {json.dumps(event)}\n\n"
-                    except queue.Empty:
-                        # Send keepalive
-                        yield f": keepalive\n\n"
-                        await asyncio.sleep(0.1)  # Small delay to prevent busy loop
-                        continue
-                except Exception as e:
-                    print(f"Error in SSE stream: {e}", flush=True)
-                    break
+                    event = event_queue.get(timeout=1.0)
+                    yield f"data: {json.dumps(event)}\n\n"
+                except queue.Empty:
+                    yield f": keepalive\n\n"
+                    await asyncio.sleep(0.1)
+                    continue
         except asyncio.CancelledError:
             pass
         finally:
-            # Unsubscribe when client disconnects
             event_emitter.unsubscribe(session_id, on_event)
 
     return StreamingResponse(
@@ -336,135 +336,104 @@ async def stream_processing_status(session_id: str):
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",  # Disable buffering in nginx
+            "X-Accel-Buffering": "no",
         },
     )
 
 
+# --- Query ---
 @app.post("/query")
-def query_endpoint(
+async def query_endpoint(
     request: QueryRequest,
     cookie_session_id: Optional[str] = Cookie(None, alias="session_id"),
     x_session_id: Optional[str] = Header(None, alias="X-Session-ID"),
 ):
     """
-    Invokes the Pinecone Query Agent to answer questions based on the knowledge base.
-    Uses session_id from header, request body, or cookie to determine which namespace to query.
+    Invokes the Pinecone Query Agent to answer questions.
+    Now async — runs blocking LangChain call in thread pool.
     """
     try:
-        # Get session_id from header, request body, or cookie (in that priority order)
         session_id = x_session_id or request.session_id or cookie_session_id
 
-        print(
-            f"📥 Received query request. Header session_id: {x_session_id}, Body session_id: {request.session_id}, Cookie session_id: {cookie_session_id}"
-        )
-        print(f"📋 Active sessions: {session_manager.get_all_sessions()}")
+        logger.info(f"Query request - session: {session_id}")
 
         if not session_id:
-            print("❌ No session_id found in request body or cookie")
             raise HTTPException(
                 status_code=401,
                 detail="No active session. Please provide session_id or upload data first.",
             )
 
-        # Keep session alive
         session_manager.update_last_access(session_id)
-
         namespace = session_manager.get_namespace(session_id)
-        print(f"🔍 Looked up namespace for session {session_id}: {namespace}")
 
         if not namespace:
-            print(f"❌ Session {session_id} not found in active sessions")
             raise HTTPException(status_code=404, detail="Session not found or expired.")
 
-        # Set namespace in context for query_tool to access
         session_manager.set_current_namespace(namespace)
-        print(f"✅ Set namespace in context: {namespace}")
+        logger.info(f"Querying namespace {namespace} for session {session_id}")
 
-        # Query with session-specific namespace
-        result = query_agent(request.user_query, namespace=namespace)
+        # Run blocking LangChain/Gemini call in thread pool — keeps event loop free
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            _background_executor, query_agent, request.user_query, namespace
+        )
+
         return {"response": result, "namespace": namespace}
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"Query error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/scribe-token")
-async def get_scribe_token():
-    """
-    This endpoint was used for ElevenLabs Realtime Speech-to-Text.
-    Since we've switched to Edge TTS, this endpoint is deprecated.
-    The frontend should use Web Speech API for speech-to-text instead.
-    """
-    print("⚠️ /scribe-token endpoint called - This is deprecated (ElevenLabs removed)")
-    raise HTTPException(
-        status_code=501,
-        detail="ElevenLabs integration has been removed. Use Web Speech API for speech-to-text.",
-    )
-
-
+# --- TTS ---
 @app.post("/tts")
 async def text_to_speech(request: TTSRequest):
     """
     Convert text to speech using Microsoft Edge TTS (free, no API key needed).
-    Returns audio as MP3.
+    Returns audio as MP3 using in-memory buffer (no temp files).
     """
     import edge_tts
-    import tempfile
-    import os
-    
-    print(f"🔊 TTS request received")
-    
+    import io
+
     try:
         text = request.text
-        # Map common voice IDs to Edge TTS voices, or use default
         voice_mapping = {
-            "21m00Tcm4TlvDq8ikWAM": "en-US-AriaNeural",  # Default female
-            "EXAVITQu4vr4xnSDxMaL": "en-US-GuyNeural",   # Male voice
+            "21m00Tcm4TlvDq8ikWAM": "en-US-AriaNeural",
+            "EXAVITQu4vr4xnSDxMaL": "en-US-GuyNeural",
             "en-US-Neural2-F": "en-US-AriaNeural",
             "en-US-Neural2-D": "en-US-GuyNeural",
         }
         voice = voice_mapping.get(request.voice_id, "en-US-AriaNeural")
-        
-        print(f"🔊 Processing TTS: voice={voice}, text_length={len(text) if text else 0}")
 
         if not text or not text.strip():
             raise HTTPException(status_code=400, detail="Text is required")
-        
-        # Generate speech using Edge TTS
-        print(f"🎤 Generating speech with Edge TTS...")
+
+        logger.info(f"TTS request: voice={voice}, text_length={len(text)}")
+
+        # Stream audio into memory buffer (no temp files)
         communicate = edge_tts.Communicate(text, voice)
-        
-        # Create temporary file for audio
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_file:
-            tmp_path = tmp_file.name
-        
-        await communicate.save(tmp_path)
-        
-        # Read the audio file
-        with open(tmp_path, "rb") as audio_file:
-            audio_content = audio_file.read()
-        
-        # Clean up temp file
-        os.unlink(tmp_path)
-        
-        print(f"✅ TTS completed, audio size: {len(audio_content)} bytes")
-        
-        # Return audio as MP3
+        audio_buffer = io.BytesIO()
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                audio_buffer.write(chunk["data"])
+
+        audio_content = audio_buffer.getvalue()
+        audio_buffer.close()
+
+        logger.info(f"TTS complete: {len(audio_content)} bytes")
+
         from fastapi.responses import Response as FastAPIResponse
         return FastAPIResponse(
             content=audio_content,
             media_type="audio/mpeg",
-            headers={
-                "Content-Disposition": "inline; filename=speech.mp3",
-            },
+            headers={"Content-Disposition": "inline; filename=speech.mp3"},
         )
-        
+
+    except HTTPException:
+        raise
     except Exception as e:
-        print(f"❌ TTS Error: {type(e).__name__}: {str(e)}")
-        import traceback
-        traceback.print_exc()
+        logger.error(f"TTS error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"TTS error: {str(e)}")
 
 

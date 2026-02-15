@@ -1,6 +1,9 @@
 from src.tools.transcript_fetcher import transcript_fetcher
 from src.schemas.response_schema import ResponseSchema
 from src.utils.event_emitter import event_emitter
+import logging
+
+logger = logging.getLogger("autovoyce.transcript_agent")
 
 
 def transcript_agent(state: ResponseSchema) -> dict:
@@ -32,6 +35,7 @@ def transcript_agent(state: ResponseSchema) -> dict:
         try:
             # Call the tool directly instead of going through the LLM agent
             transcript = transcript_fetcher.invoke({"video_url": video_url})
+            logger.info(f"Transcript for video {video_url} fetched by fetcher tool")
 
             # Handle case where transcript might be a list instead of a string
             if isinstance(transcript, list):
@@ -48,10 +52,7 @@ def transcript_agent(state: ResponseSchema) -> dict:
                 or transcript.lower() == "none"
             ):
                 error_msg = f"Empty transcript returned for video {video_url}. The video might be silent, too short, or have audio issues."
-                print(f"⚠️ {error_msg}")
-                aggregated_transcripts += (
-                    f"\n\nError for Video URL-{video_url}: \n{error_msg}"
-                )
+                logger.warning(error_msg)
                 if session_id:
                     event_emitter.emit(
                         session_id,
@@ -62,6 +63,23 @@ def transcript_agent(state: ResponseSchema) -> dict:
                             "video_number": i + 1,
                             "total_videos": len(video_urls),
                             "error": error_msg,
+                        },
+                    )
+                continue
+
+            # Check if transcript_fetcher returned an error message instead of a real transcript
+            if transcript.startswith("Error:"):
+                logger.warning(f"Transcript fetcher returned error for {video_url}: {transcript}")
+                if session_id:
+                    event_emitter.emit(
+                        session_id,
+                        "video_error",
+                        f"Failed to fetch transcript for video {i + 1}/{len(video_urls)}: {video_url}",
+                        {
+                            "video_url": video_url,
+                            "video_number": i + 1,
+                            "total_videos": len(video_urls),
+                            "error": transcript,
                         },
                     )
                 continue
@@ -81,7 +99,7 @@ def transcript_agent(state: ResponseSchema) -> dict:
                     },
                 )
         except Exception as e:
-            aggregated_transcripts += f"\n\nError for Video URL-{video_url}: \n{str(e)}"
+            logger.error(f"Error processing video {video_url}: {str(e)}")
             if session_id:
                 event_emitter.emit(
                     session_id,

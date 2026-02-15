@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+
+# Docker
+Dockerfile
+docker-compose*.yml
+
+# Tests (not needed in production image)
+tests/
+
+# Docs & configs
+*.md
+LICENSE
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment (secrets injected at runtime, not baked in)
+.env
+.env.*

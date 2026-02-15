@@ -2,8 +2,9 @@ from langchain.tools import tool
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api.formatters import TextFormatter
 import re
-import os
+import logging
 
+logger = logging.getLogger("autovoyce.transcript")
 
 def extract_video_id(video_url: str) -> str:
     """Extract video ID from various YouTube URL formats."""
@@ -21,18 +22,18 @@ def extract_video_id(video_url: str) -> str:
 
 def get_transcript_from_api(video_id: str) -> str:
     """
-    Try to fetch transcript using YouTube's caption API.
-    This is instant and doesn't require downloading/transcribing.
+    Fetch transcript using YouTube's caption API (youtube-transcript-api v1.2.4).
     
-    Uses proxy config from environment if available for rate limit bypass.
+    Uses Webshare residential proxy if credentials are available in settings.
+    Falls back to direct connection if no proxy is configured.
     """
     from settings import WEBSHARE_PROXY_USERNAME, WEBSHARE_PROXY_PASSWORD
     
     try:
-        # Initialize API with proxy if credentials available
+        # Initialize API — with proxy if credentials are available
         if WEBSHARE_PROXY_USERNAME and WEBSHARE_PROXY_PASSWORD:
             from youtube_transcript_api.proxies import WebshareProxyConfig
-            print(f"🔀 Using Webshare rotating proxies")
+            logger.info("Using Webshare rotating residential proxies")
             ytt_api = YouTubeTranscriptApi(
                 proxy_config=WebshareProxyConfig(
                     proxy_username=WEBSHARE_PROXY_USERNAME,
@@ -42,89 +43,40 @@ def get_transcript_from_api(video_id: str) -> str:
         else:
             ytt_api = YouTubeTranscriptApi()
         
-        # Try to get transcript (auto-generated or manual captions)
+        # Primary: Use simple fetch() — tries English by default
+        try:
+            fetched = ytt_api.fetch(video_id, languages=['en', 'en-US', 'en-GB'])
+            formatter = TextFormatter()
+            return formatter.format_transcript(fetched)
+        except Exception:
+            pass
+        
+        # Fallback: List transcripts and find any available one
         transcript_list = ytt_api.list(video_id)
         
         # Prefer manual transcripts, fall back to auto-generated
         try:
-            transcript = transcript_list.find_manually_created_transcript(['en'])
-        except:
+            transcript = transcript_list.find_manually_created_transcript(['en', 'en-US', 'en-GB'])
+        except Exception:
             try:
-                transcript = transcript_list.find_generated_transcript(['en'])
-            except:
+                transcript = transcript_list.find_generated_transcript(['en', 'en-US', 'en-GB'])
+            except Exception:
                 # Try any available transcript
                 transcript = transcript_list.find_transcript(['en', 'en-US', 'en-GB'])
         
-        # Fetch and format
-        fetched_transcript = transcript.fetch()
+        fetched = transcript.fetch()
         formatter = TextFormatter()
-        return formatter.format_transcript(fetched_transcript)
+        return formatter.format_transcript(fetched)
         
     except Exception as e:
         raise Exception(f"No captions available: {str(e)}")
 
 
-def get_transcript_with_groq_whisper(video_url: str) -> str:
-    """
-    Fallback: Download audio and transcribe with Groq Whisper API.
-    Much faster than local Whisper - transcribes in seconds on Groq's LPU.
-    """
-    import yt_dlp
-    from groq import Groq
-    from settings import GROQ_API_KEY, YOUTUBE_COOKIES_PATH
-    
-    output_filename = f"temp_audio_{os.getpid()}"
-    
-    ydl_opts = {
-        "format": "bestaudio/best",
-        "postprocessors": [
-            {
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": "64",  # Lower quality for faster upload
-            }
-        ],
-        "outtmpl": output_filename,
-        "quiet": True,
-        "no_warnings": True,
-    }
-    
-    if YOUTUBE_COOKIES_PATH and os.path.exists(YOUTUBE_COOKIES_PATH):
-        ydl_opts["cookiefile"] = YOUTUBE_COOKIES_PATH
-        print(f"🍪 Using cookies from: {YOUTUBE_COOKIES_PATH}")
-
-    try:
-        print(f"⬇️ Downloading audio (Groq Whisper fallback)...")
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([video_url])
-
-        print(f"🤖 Transcribing with Groq Whisper API...")
-        client = Groq(api_key=GROQ_API_KEY)
-        
-        with open(f"{output_filename}.mp3", "rb") as audio_file:
-            transcription = client.audio.transcriptions.create(
-                file=audio_file,
-                model="whisper-large-v3",
-                response_format="text"
-            )
-        
-        print("✅ Transcription complete!")
-        return transcription
-
-    finally:
-        if os.path.exists(f"{output_filename}.mp3"):
-            os.remove(f"{output_filename}.mp3")
-            print("🧹 Cleanup complete.")
-
-
 @tool
 def transcript_fetcher(video_url: str) -> str:
     """
-    Fetches transcript for a YouTube video.
+    Fetches transcript for a YouTube video using the YouTube Caption API.
     
-    Uses YouTube's caption API first (instant), falls back to 
-    Whisper transcription only if captions aren't available.
-
     Args:
         video_url (str): The URL of the YouTube video.
 
@@ -132,25 +84,17 @@ def transcript_fetcher(video_url: str) -> str:
         str: The full transcript text.
     """
     video_id = extract_video_id(video_url)
-    print(f"🎬 Processing video: {video_id}")
+    logger.info(f"Processing video: {video_id}")
     
-    # Try 1: YouTube Caption API (instant)
     try:
-        print("📋 Fetching YouTube captions...")
+        logger.info("Fetching YouTube captions...")
         transcript = get_transcript_from_api(video_id)
-        print("✅ Got transcript from YouTube captions!")
+        logger.info("Got transcript from YouTube captions")
         return transcript
     except Exception as e:
-        print(f"⚠️ Captions not available: {e}")
-    
-    # Try 2: Groq Whisper fallback (fast cloud transcription)
-    try:
-        print("🔄 Falling back to Groq Whisper transcription...")
-        transcript = get_transcript_with_groq_whisper(video_url)
-        print("✅ Got transcript from Groq Whisper!")
-        return transcript
-    except Exception as e:
-        return f"Error: Could not get transcript. {str(e)}"
+        error_msg = f"Error: Could not get transcript. {str(e)}"
+        logger.warning(error_msg)
+        return error_msg
 
 
 # --- Usage ---
