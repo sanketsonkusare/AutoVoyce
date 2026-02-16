@@ -334,9 +334,11 @@ async def stream_processing_status(session_id: str):
         event_generator(),
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
+            "Cache-Control": "no-cache, no-transform",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Type": "text/event-stream; charset=utf-8",
         },
     )
 

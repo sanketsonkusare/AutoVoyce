@@ -60,10 +60,11 @@ ENV PORT=8000 \
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:${PORT}/health || exit 1
 
-# Run with 4 workers for production concurrency
+# Run with single worker (sessions are in-memory; multiple workers would cause session loss)
+# To scale: switch to Redis-backed sessions, then increase --workers
 CMD uvicorn src.main.main:app \
     --host 0.0.0.0 \
     --port $PORT \
-    --workers 4 \
+    --workers 1 \
     --timeout-keep-alive 65 \
     --access-log
