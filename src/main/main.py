@@ -377,7 +377,7 @@ async def query_endpoint(
         # Run blocking LangChain/Gemini call in thread pool — keeps event loop free
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
-            _background_executor, query_agent, request.user_query, namespace
+            _background_executor, query_agent, request.user_query, namespace, session_id
         )
 
         return {"response": result, "namespace": namespace}
