@@ -2,7 +2,7 @@
 # AutoVoyce Backend — Production Dockerfile
 # ============================================================
 # Uses Pinecone integrated inference (no local PyTorch needed).
-# Runs as non-root user with health check and multi-worker uvicorn.
+# Runs as non-root user with a single uvicorn worker.
 # ============================================================
 
 FROM python:3.12-slim AS builder
@@ -56,9 +56,6 @@ ENV PORT=8000 \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
-# Health check — hits the /health endpoint every 30s
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:${PORT}/health || exit 1
 
 # Run with single worker (sessions are in-memory; multiple workers would cause session loss)
 # To scale: switch to Redis-backed sessions, then increase --workers
