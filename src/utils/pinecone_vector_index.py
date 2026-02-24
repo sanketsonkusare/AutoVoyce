@@ -55,11 +55,27 @@ class PineconeVectorIndex:
 
     def search(self, query: str, namespace: str, top_k: int = 5) -> list[str]:
         """
-        Search using Pinecone integrated inference (text query, no local embedding).
+        Hybrid search using Pinecone integrated inference (semantic + lexical).
+        Combines dense embeddings (from inputs.text) with a BM25-style sparse vector.
+        Requires index with metric='dotproduct' to support both dense and sparse vectors.
         """
+        from collections import Counter
+
+        # Generate sparse vector for lexical/keyword matching (BM25-style term frequencies)
+        words = query.lower().split()
+        word_counts = Counter(words)
+        sparse_vector = {
+            "indices": list(range(len(word_counts))),
+            "values": [float(count) for count in word_counts.values()],
+        }
+
         results = self.__index.search(
             namespace=namespace,
-            query={"inputs": {"text": query}, "top_k": top_k},
+            query={
+                "inputs": {"text": query},        # Dense embedding (semantic)
+                "sparse_vector": sparse_vector,    # Lexical/keyword boost
+                "top_k": top_k,
+            },
             fields=["chunk_text"],
         )
         hits = results.get("result", {}).get("hits", [])
