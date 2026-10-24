@@ -40,3 +40,6 @@ Thumbs.db
 # Environment (secrets injected at runtime, not baked in)
 .env
 .env.*
+
+# Transcript cache (mounted as a volume at runtime)
+.cache/

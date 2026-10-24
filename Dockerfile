@@ -43,7 +43,7 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 COPY . .
 
 # Own app directory to non-root user
-RUN chown -R autovoyce:autovoyce /app
+RUN mkdir -p /app/.cache/transcripts && chown -R autovoyce:autovoyce /app
 
 # Switch to non-root user
 USER autovoyce

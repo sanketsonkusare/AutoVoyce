@@ -13,3 +13,6 @@ __pycache__/
 *.pyzwzwz
 
 *.pem
+
+# Transcript cache
+.cache/
