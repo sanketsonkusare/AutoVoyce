@@ -72,7 +72,7 @@ def upload_transcript_to_pinecone(transcript: str, namespace: str = "youtube_tra
         total_uploaded = 0
         for batch_start in range(0, len(records), _BATCH_SIZE):
             batch = records[batch_start : batch_start + _BATCH_SIZE]
-            index.upsert_records(namespace, batch)
+            index.upsert_records(namespace=namespace, records=batch)
             total_uploaded += len(batch)
             logger.info(f"Uploaded batch {batch_start // _BATCH_SIZE + 1}: {len(batch)} records")
 

@@ -40,7 +40,7 @@ class PineconeVectorIndex:
         total_uploaded = 0
         for batch_start in range(0, len(records), batch_size):
             batch = records[batch_start : batch_start + batch_size]
-            self.__index.upsert_records(namespace, batch)
+            self.__index.upsert_records(namespace=namespace, records=batch)
             total_uploaded += len(batch)
 
         msg = f"Uploaded {total_uploaded} chunks to Pinecone index '{self.__index_name}' in namespace '{namespace}'"
