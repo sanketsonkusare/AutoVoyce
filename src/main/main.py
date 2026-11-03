@@ -371,7 +371,6 @@ async def query_endpoint(
         if not namespace:
             raise HTTPException(status_code=404, detail="Session not found or expired.")
 
-        session_manager.set_current_namespace(namespace)
         logger.info(f"Querying namespace {namespace} for session {session_id}")
 
         # Run blocking LangChain/Gemini call in thread pool — keeps event loop free

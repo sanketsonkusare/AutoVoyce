@@ -16,3 +16,9 @@ __pycache__/
 
 # Transcript cache
 .cache/
+
+# Virtual environment
+.venv/
+
+# Test cache
+.pytest_cache/

@@ -1,7 +1,5 @@
-from langchain_core.messages import HumanMessage
 from src.tools.pinecone_uploader import upload_transcript_to_pinecone
 from src.schemas.response_schema import ResponseSchema
-from src.agents.agent_creator import create_agent_with_tools
 from src.utils.event_emitter import event_emitter
 
 def uploader_agent(state: ResponseSchema) -> dict:
@@ -13,8 +11,6 @@ def uploader_agent(state: ResponseSchema) -> dict:
         return {"transcript": "No transcript provided."}
 
     print(f"Processing transcript upload to namespace: {namespace}...")
-    if session_id:
-        event_emitter.emit(session_id, "pinecone_upload_started", f"Starting Pinecone upload to namespace: {namespace}")
     try:
         # Call the tool directly with namespace and session_id for event emission
         response = upload_transcript_to_pinecone.invoke({

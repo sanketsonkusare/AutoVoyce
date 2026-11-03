@@ -12,12 +12,8 @@ logger = logging.getLogger("autovoyce.sessions")
 _lock = threading.Lock()
 _sessions: Dict[str, str] = {}
 _session_last_access: Dict[str, float] = {}
-_last_session_id: Optional[str] = None
 _scheduler_thread: Optional[threading.Thread] = None
 _stop_scheduler: threading.Event = threading.Event()
-
-# Thread-local storage for current namespace context
-_context = threading.local()
 
 
 def _check_pinecone_namespace_limit(max_namespaces: int = 90):
@@ -60,8 +56,6 @@ def create_session() -> tuple[str, str]:
     Thread-safe. Auto-purges stale namespaces if approaching Pinecone limit.
     Returns: (session_id, namespace)
     """
-    global _last_session_id
-
     # Guard against hitting the 100-namespace limit
     _check_pinecone_namespace_limit()
 
@@ -70,7 +64,6 @@ def create_session() -> tuple[str, str]:
     with _lock:
         _sessions[session_id] = namespace
         _session_last_access[session_id] = time.time()
-        _last_session_id = session_id
         total = len(_sessions)
     logger.info(f"Created session {session_id} -> {namespace} (total: {total})")
     return session_id, namespace
@@ -83,12 +76,6 @@ def update_last_access(session_id: str):
             _session_last_access[session_id] = time.time()
 
 
-def get_last_session_id() -> Optional[str]:
-    """Returns the most recently created session ID."""
-    with _lock:
-        return _last_session_id
-
-
 def get_namespace(session_id: str) -> Optional[str]:
     """
     Retrieves the namespace for a given session ID. Thread-safe.
@@ -99,22 +86,6 @@ def get_namespace(session_id: str) -> Optional[str]:
     if not namespace:
         logger.warning(f"Session {session_id} not found")
     return namespace
-
-
-def set_current_namespace(namespace: str):
-    """
-    Sets the current namespace in thread-local context.
-    This allows tools to access the namespace without explicit parameter passing.
-    """
-    _context.namespace = namespace
-
-
-def get_current_namespace() -> Optional[str]:
-    """
-    Gets the current namespace from thread-local context.
-    Returns: namespace or None if not set
-    """
-    return getattr(_context, 'namespace', None)
 
 
 def delete_session(session_id: str) -> bool:

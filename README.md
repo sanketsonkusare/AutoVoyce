@@ -36,7 +36,6 @@ Create a `.env` file in the `backend/` directory with the following variables:
 
 ```env
 GOOGLE_API_KEY=your_google_api_key_here
-GROQ_API_KEY=your_groq_api_key_here
 SERP_API_KEY=your_serp_api_key_here
 SEARCH_LIMIT=10
 PINECONE_API_KEY=your_pinecone_api_key_here
