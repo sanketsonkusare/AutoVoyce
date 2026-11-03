@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Response, Cookie, Header
+from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -76,7 +76,7 @@ def health_check():
 
 # --- Video Search ---
 @app.post("/upload")
-async def search_videos(request: QueryRequest, response: Response):
+async def search_videos(request: QueryRequest):
     """
     Phase 1: Searches YouTube for videos matching the query.
     Creates a new session and returns video list for user selection.
@@ -84,14 +84,6 @@ async def search_videos(request: QueryRequest, response: Response):
     try:
         session_id, namespace = session_manager.create_session()
 
-        response.set_cookie(
-            key="session_id",
-            value=session_id,
-            httponly=False,
-            samesite="none",
-            secure=False,
-            max_age=86400,
-        )
         logger.info(f"Created session {session_id} -> namespace {namespace}")
 
         # Run blocking search in thread pool to avoid blocking event loop
@@ -157,15 +149,14 @@ async def get_transcript(video_id: str):
 @app.post("/upload/process")
 async def process_selected_videos(
     request: ProcessRequest,
-    response: Response,
-    cookie_session_id: Optional[str] = Cookie(None, alias="session_id"),
+    x_session_id: Optional[str] = Header(None, alias="X-Session-ID"),
 ):
     """
     Phase 2: Processes selected videos (transcript extraction + Pinecone upload).
     Runs in background thread; frontend connects to SSE for progress.
     """
     try:
-        session_id = request.session_id or cookie_session_id
+        session_id = request.session_id or x_session_id
 
         logger.info(f"Process request - session: {session_id}, videos: {len(request.video_ids)}")
 
@@ -191,14 +182,6 @@ async def process_selected_videos(
                 detail="No video IDs provided. Please select at least one video.",
             )
 
-        response.set_cookie(
-            key="session_id",
-            value=session_id,
-            httponly=False,
-            samesite="none",
-            secure=False,
-            max_age=86400,
-        )
 
         def run_processing_workflow():
             """Background processing: fetch transcripts → embed → upload to Pinecone."""
@@ -347,7 +330,6 @@ async def stream_processing_status(session_id: str):
 @app.post("/query")
 async def query_endpoint(
     request: QueryRequest,
-    cookie_session_id: Optional[str] = Cookie(None, alias="session_id"),
     x_session_id: Optional[str] = Header(None, alias="X-Session-ID"),
 ):
     """
@@ -355,7 +337,7 @@ async def query_endpoint(
     Now async — runs blocking LangChain call in thread pool.
     """
     try:
-        session_id = x_session_id or request.session_id or cookie_session_id
+        session_id = x_session_id or request.session_id
 
         logger.info(f"Query request - session: {session_id}")
 
