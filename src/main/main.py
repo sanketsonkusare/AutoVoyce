@@ -277,39 +277,49 @@ def shutdown_event():
 
 
 # --- SSE Stream ---
+# The stream ends after one of these, so clients don't hold connections forever
+TERMINAL_EVENT_TYPES = {"processing_complete", "processing_error"}
+SSE_KEEPALIVE_SECONDS = 15.0
+
 @app.get("/upload/status/{session_id}")
 async def stream_processing_status(session_id: str):
     """
     Server-Sent Events endpoint for streaming processing status updates.
     Frontend connects to this endpoint to receive real-time updates.
     """
-    import queue
-
     async def event_generator():
-        yield f"data: {json.dumps({'type': 'connected', 'message': 'Connected to processing status stream'})}\n\n"
-
-        event_queue = queue.Queue()
+        loop = asyncio.get_running_loop()
+        event_queue: asyncio.Queue = asyncio.Queue()
 
         def on_event(event):
-            event_queue.put(event)
+            # Called from worker threads: hand the event to the event loop safely
+            try:
+                loop.call_soon_threadsafe(event_queue.put_nowait, event)
+            except RuntimeError:
+                pass  # loop already closed (client gone / shutdown)
 
-        event_emitter.subscribe(session_id, on_event)
+        # Subscribe and read history in one step so no event is lost or duplicated
+        history = event_emitter.subscribe_with_history(session_id, on_event)
 
         try:
-            existing_events = event_emitter.get_events(session_id)
-            for event in existing_events:
+            yield f"data: {json.dumps({'type': 'connected', 'message': 'Connected to processing status stream'})}\n\n"
+
+            for event in history:
                 yield f"data: {json.dumps(event)}\n\n"
+                if event.get("type") in TERMINAL_EVENT_TYPES:
+                    return
 
             while True:
                 try:
-                    event = event_queue.get(timeout=1.0)
-                    yield f"data: {json.dumps(event)}\n\n"
-                except queue.Empty:
-                    yield f": keepalive\n\n"
-                    await asyncio.sleep(0.1)
+                    event = await asyncio.wait_for(
+                        event_queue.get(), timeout=SSE_KEEPALIVE_SECONDS
+                    )
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
                     continue
-        except asyncio.CancelledError:
-            pass
+                yield f"data: {json.dumps(event)}\n\n"
+                if event.get("type") in TERMINAL_EVENT_TYPES:
+                    return
         finally:
             event_emitter.unsubscribe(session_id, on_event)
 

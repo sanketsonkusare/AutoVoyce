@@ -59,25 +59,40 @@ class ProcessingEventEmitter:
                 self._listeners[session_id] = []
             self._listeners[session_id].append(callback)
 
+    def subscribe_with_history(self, session_id: str, callback: Callable) -> List[dict]:
+        """
+        Atomically subscribe and return the events emitted so far.
+
+        Doing both under one lock means an event emitted concurrently is either
+        in the returned history or delivered to the callback, never both.
+        """
+        with self._lock:
+            self._listeners.setdefault(session_id, []).append(callback)
+            return self._events.get(session_id, []).copy()
+
     def unsubscribe(self, session_id: str, callback: Callable):
         """Unsubscribe from events for a session."""
         with self._lock:
-            if session_id in self._listeners:
-                try:
-                    self._listeners[session_id].remove(callback)
-                except ValueError:
-                    pass
+            listeners = self._listeners.get(session_id)
+            if listeners is None:
+                return
+            try:
+                listeners.remove(callback)
+            except ValueError:
+                pass
+            if not listeners:
+                del self._listeners[session_id]
 
     def get_events(self, session_id: str) -> List[dict]:
         """Get all events for a session."""
         with self._lock:
             return self._events.get(session_id, []).copy()
 
-    def clear_events(self, session_id: str):
-        """Clear events for a session."""
+    def clear_session(self, session_id: str):
+        """Drop all stored events and listeners for a session (frees memory)."""
         with self._lock:
-            if session_id in self._events:
-                del self._events[session_id]
+            self._events.pop(session_id, None)
+            self._listeners.pop(session_id, None)
 
 
 # Global event emitter instance
