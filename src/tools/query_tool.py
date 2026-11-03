@@ -2,7 +2,6 @@ from pinecone import Pinecone
 from settings import PINECONE_API_KEY, PINECONE_HOST_URL
 from langchain.tools import tool
 from pydantic import Field
-from src.utils import session_manager
 
 # Lazy initialization - only create when needed
 _pc = None

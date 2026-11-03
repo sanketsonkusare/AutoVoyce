@@ -88,28 +88,44 @@ def get_namespace(session_id: str) -> Optional[str]:
     return namespace
 
 
+def _free_session_memory(session_id: str, namespace: str) -> None:
+    """Release everything kept in memory for a session."""
+    # Imported here to avoid a circular import at module load time
+    from src.utils.event_emitter import event_emitter
+    from src.agents.pinecone_query_agent import forget_session
+
+    event_emitter.clear_session(session_id)
+    forget_session(namespace, session_id)
+
+
 def delete_session(session_id: str) -> bool:
     """
-    Deletes a session and its associated Pinecone namespace. Thread-safe.
-    Returns: True if session was deleted, False if it didn't exist
+    Deletes a session, its in-memory state (events, cached agent, chat
+    history) and its Pinecone namespace. Thread-safe.
+    Returns: True if the Pinecone namespace was deleted, False otherwise
     """
     with _lock:
         namespace = _sessions.pop(session_id, None)
         _session_last_access.pop(session_id, None)
 
-    if namespace:
-        logger.info(f"Deleting session {session_id} (namespace: {namespace})")
-        try:
-            pc = Pinecone(api_key=PINECONE_API_KEY)
-            index = pc.Index(host=PINECONE_HOST_URL)
-            index.delete_namespace(namespace=namespace)
-            logger.info(f"Deleted Pinecone namespace: {namespace}")
-            return True
-        except Exception as e:
-            logger.error(f"Error deleting namespace {namespace}: {e}", exc_info=True)
-            return False
-    else:
+    if not namespace:
         logger.warning(f"No namespace found for session {session_id}")
+        return False
+
+    logger.info(f"Deleting session {session_id} (namespace: {namespace})")
+    try:
+        _free_session_memory(session_id, namespace)
+    except Exception as e:
+        logger.error(f"Error freeing memory for session {session_id}: {e}", exc_info=True)
+
+    try:
+        pc = Pinecone(api_key=PINECONE_API_KEY)
+        index = pc.Index(host=PINECONE_HOST_URL)
+        index.delete_namespace(namespace=namespace)
+        logger.info(f"Deleted Pinecone namespace: {namespace}")
+        return True
+    except Exception as e:
+        logger.error(f"Error deleting namespace {namespace}: {e}", exc_info=True)
         return False
 
 

@@ -49,6 +49,15 @@ def _get_or_create_agent(namespace: str, verbose: bool):
     return agent
 
 
+def forget_session(namespace: str, session_id: str) -> None:
+    """Drop the cached agent and the conversation history of an ended session."""
+    _agent_cache.pop(namespace, None)
+    try:
+        _checkpointer.delete_thread(session_id)
+    except Exception as e:
+        print(f"Could not clear chat history for session {session_id}: {e}")
+
+
 def query_agent(query: str, namespace: str, session_id: str, verbose: bool = True) -> str:
     """
     Agent that takes a query, searches Pinecone for context, and answers the question.
