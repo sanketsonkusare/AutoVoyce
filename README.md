@@ -99,22 +99,24 @@ Once the server is running, you can access:
      ```
 
 2. **POST /query**
-   - Queries the Pinecone knowledge base
-   - Request body: `{"user_query": "your question"}`
+   - Queries the Pinecone knowledge base for a session
+   - Request body: `{"user_query": "your question", "session_id": "<id from /upload>"}`
+     (or send the id in an `X-Session-ID` header). There is no session cookie.
    - Example:
      ```bash
      curl -X POST "http://localhost:8000/query" \
           -H "Content-Type: application/json" \
-          -d '{"user_query": "What are the best iPhones?"}'
+          -d '{"user_query": "What are the best iPhones?", "session_id": "<session_id>"}'
      ```
 
 ## Development
 
 ### Running Tests
 
-If you have tests, you can run them with:
+Tests mock Pinecone, Gemini and SerpAPI, so they need no API keys:
 
 ```bash
+uv sync --group dev
 uv run pytest
 ```
 
