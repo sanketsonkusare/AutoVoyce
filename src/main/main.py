@@ -82,12 +82,15 @@ async def search_videos(request: QueryRequest):
     Creates a new session and returns video list for user selection.
     """
     try:
-        session_id, namespace = session_manager.create_session()
+        # create_session may call Pinecone, so keep it off the event loop
+        loop = asyncio.get_running_loop()
+        session_id, namespace = await loop.run_in_executor(
+            _background_executor, session_manager.create_session
+        )
 
         logger.info(f"Created session {session_id} -> namespace {namespace}")
 
         # Run blocking search in thread pool to avoid blocking event loop
-        loop = asyncio.get_event_loop()
         videos = await loop.run_in_executor(
             _background_executor, retriever_agent_with_metadata, request.user_query
         )

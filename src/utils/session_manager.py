@@ -16,12 +16,31 @@ _scheduler_thread: Optional[threading.Thread] = None
 _stop_scheduler: threading.Event = threading.Event()
 
 
+# Pinecone stats are fetched at most this often (seconds)
+NAMESPACE_CHECK_INTERVAL_SECONDS = 60
+_last_namespace_check: float = 0.0
+
+
 def _check_pinecone_namespace_limit(max_namespaces: int = 90):
     """
     Guard against hitting Pinecone's 100-namespace limit.
-    If we're at max_namespaces or above, purge the oldest session_ namespaces.
-    This handles orphaned namespaces from server restarts.
+
+    When session namespaces reach max_namespaces, delete the orphaned ones:
+    namespaces whose session no longer exists in memory (e.g. left behind by a
+    server restart or redeploy). Namespaces of live sessions are never touched,
+    even if they are still empty because processing just started.
+
+    Runs at most once every NAMESPACE_CHECK_INTERVAL_SECONDS.
     """
+    global _last_namespace_check
+
+    now = time.time()
+    with _lock:
+        if now - _last_namespace_check < NAMESPACE_CHECK_INTERVAL_SECONDS:
+            return
+        _last_namespace_check = now
+        live_namespaces = set(_sessions.values())
+
     try:
         pc = Pinecone(api_key=PINECONE_API_KEY)
         index = pc.Index(host=PINECONE_HOST_URL)
@@ -29,23 +48,26 @@ def _check_pinecone_namespace_limit(max_namespaces: int = 90):
         namespaces = stats.get("namespaces", {})
         session_namespaces = [ns for ns in namespaces if ns.startswith("session_")]
 
-        if len(session_namespaces) >= max_namespaces:
-            # Delete the half with fewest vectors (likely stale/test sessions)
-            ns_by_vectors = sorted(
-                session_namespaces,
-                key=lambda ns: namespaces[ns].get("vector_count", 0)
+        if len(session_namespaces) < max_namespaces:
+            return
+
+        orphaned = [ns for ns in session_namespaces if ns not in live_namespaces]
+        logger.warning(
+            f"Pinecone namespace limit approaching ({len(session_namespaces)}/100). "
+            f"Purging {len(orphaned)} orphaned namespaces."
+        )
+        for ns in orphaned:
+            try:
+                index.delete_namespace(namespace=ns)
+                logger.info(f"Purged orphaned namespace: {ns}")
+            except Exception as e:
+                logger.error(f"Failed to purge {ns}: {e}")
+
+        if len(session_namespaces) - len(orphaned) >= max_namespaces:
+            logger.error(
+                "Pinecone namespace limit nearly reached by live sessions; "
+                "new uploads may fail until sessions expire."
             )
-            to_delete = ns_by_vectors[:len(ns_by_vectors) // 2]
-            logger.warning(
-                f"Pinecone namespace limit approaching ({len(session_namespaces)}/100). "
-                f"Auto-purging {len(to_delete)} stale namespaces."
-            )
-            for ns in to_delete:
-                try:
-                    index.delete(delete_all=True, namespace=ns)
-                    logger.info(f"Auto-purged namespace: {ns}")
-                except Exception as e:
-                    logger.error(f"Failed to purge {ns}: {e}")
     except Exception as e:
         logger.error(f"Namespace limit check failed: {e}")
 
