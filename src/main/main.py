@@ -1,14 +1,16 @@
-from fastapi import FastAPI, HTTPException, Header
+from fastapi import FastAPI, HTTPException, Header, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
-from typing import Optional, List
+from pydantic import BaseModel, Field, StringConstraints
+from typing import Annotated, Optional, List
 from src.workflow.workflow import processing_workflow
 from src.agents.pinecone_query_agent import query_agent
 from src.agents.youtube_retriever_agent import retriever_agent_with_metadata
 from src.utils import session_manager
 from src.utils.event_emitter import event_emitter
-from settings import DEFAULT_TIMEOUT_SECONDS
+from settings import DEFAULT_TIMEOUT_SECONDS, SEARCH_LIMIT
 from os import getenv
 from concurrent.futures import ThreadPoolExecutor
 import asyncio
@@ -43,19 +45,46 @@ app.add_middleware(
 
 
 # --- Request Models ---
+# Size limits keep a single request from running up API costs
+MAX_QUERY_CHARS = 2000
+MAX_TTS_REQUEST_CHARS = 20000
+TTS_MAX_SPOKEN_CHARS = 5000
+
+VideoId = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9_-]{11}$")]
+
+
 class QueryRequest(BaseModel):
-    user_query: str
+    user_query: str = Field(min_length=1, max_length=MAX_QUERY_CHARS)
     session_id: Optional[str] = None
 
 
 class ProcessRequest(BaseModel):
-    video_ids: List[str]
+    video_ids: List[VideoId] = Field(max_length=SEARCH_LIMIT)
     session_id: Optional[str] = None
 
 
 class TTSRequest(BaseModel):
-    text: str
+    text: str = Field(max_length=MAX_TTS_REQUEST_CHARS)
     voice_id: Optional[str] = "JBFqnCBsd6RMkjVDRZzb"
+
+
+def _trim_for_tts(text: str) -> str:
+    """Keep speech to TTS_MAX_SPOKEN_CHARS, cutting at the last sentence end."""
+    if len(text) <= TTS_MAX_SPOKEN_CHARS:
+        return text
+    cut = text[:TTS_MAX_SPOKEN_CHARS]
+    end = max(cut.rfind(". "), cut.rfind("! "), cut.rfind("? "), cut.rfind("\n"))
+    return cut[: end + 1].rstrip() if end > 0 else cut
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(request: Request, exc: RequestValidationError):
+    """Return validation errors as one readable string (the frontend shows `detail`)."""
+    parts = []
+    for err in exc.errors():
+        field = ".".join(str(p) for p in err.get("loc", []) if p != "body")
+        parts.append(f"{field}: {err.get('msg', 'invalid value')}")
+    return JSONResponse(status_code=422, content={"detail": "; ".join(parts) or "Invalid request"})
 
 
 # --- Health Check ---
@@ -404,6 +433,7 @@ async def text_to_speech(request: TTSRequest):
 
         if not text or not text.strip():
             raise HTTPException(status_code=400, detail="Text is required")
+        text = _trim_for_tts(text)
 
         logger.info(f"TTS request: voice={voice}, text_length={len(text)}")
 
