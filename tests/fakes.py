@@ -48,3 +48,33 @@ class FakeIndex:
 
     def delete_namespace(self, namespace):
         self.records.pop(namespace, None)
+
+
+from typing import Any  # noqa: E402
+
+from langchain_core.language_models.chat_models import BaseChatModel  # noqa: E402
+from langchain_core.messages import AIMessage, AIMessageChunk  # noqa: E402
+from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult  # noqa: E402
+
+
+class FakeChatModel(BaseChatModel):
+    """Streams the given chunks; raises after `fail_after` chunks if set."""
+
+    chunks: list[Any] = []
+    fail_after: int | None = None
+    calls: list[list] = []
+
+    @property
+    def _llm_type(self) -> str:
+        return "fake-chat"
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        text = "".join(c if isinstance(c, str) else c[0]["text"] for c in self.chunks)
+        return ChatResult(generations=[ChatGeneration(message=AIMessage(content=text))])
+
+    async def _astream(self, messages, stop=None, run_manager=None, **kwargs):
+        self.calls.append(list(messages))
+        for i, chunk in enumerate(self.chunks):
+            if self.fail_after is not None and i >= self.fail_after:
+                raise RuntimeError("model failed")
+            yield ChatGenerationChunk(message=AIMessageChunk(content=chunk))
