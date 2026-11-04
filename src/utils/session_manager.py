@@ -127,10 +127,10 @@ def _free_session_memory(session_id: str, namespace: str) -> None:
     """Release everything kept in memory for a session."""
     # Imported here to avoid a circular import at module load time
     from src.utils.event_emitter import event_emitter
-    from src.agents.pinecone_query_agent import forget_session
+    from src.rag import history
 
     event_emitter.clear_session(session_id)
-    forget_session(namespace, session_id)
+    history.clear(session_id)
 
 
 def delete_session(session_id: str) -> bool:
