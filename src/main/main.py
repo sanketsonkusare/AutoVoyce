@@ -123,6 +123,7 @@ async def search_videos(request: QueryRequest):
         videos = await loop.run_in_executor(
             _background_executor, retriever_agent_with_metadata, request.user_query
         )
+        session_manager.set_videos(session_id, videos)
 
         namespace_check = session_manager.get_namespace(session_id)
         if not namespace_check:
