@@ -1,5 +1,5 @@
-from src.tools.transcript_fetcher import extract_video_id, get_transcript_from_api, transcript_text
-from src.schemas.response_schema import ResponseSchema
+from src.tools.transcript_fetcher import get_transcript_from_api, transcript_text
+from src.schemas.response_schema import ResponseSchema, VideoTranscript
 from src.utils.event_emitter import event_emitter
 import logging
 
@@ -7,132 +7,55 @@ logger = logging.getLogger("autovoyce.transcript_agent")
 
 
 def transcript_agent(state: ResponseSchema) -> dict:
-    video_urls = state["video_urls"]
+    videos = state.get("videos", [])
     session_id = state.get("session_id", "")
-    print(f"Found {len(video_urls)} videos to process.")
+    total = len(videos)
+    logger.info(f"Found {total} videos to process.")
 
-    if session_id:
-        event_emitter.emit(
-            session_id,
-            "transcript_started",
-            f"Starting transcript extraction for {len(video_urls)} videos",
-        )
-
-    aggregated_transcripts = ""
-    for i, video_url in enumerate(video_urls):
-        print(f"Processing video {i + 1}/{len(video_urls)}: {video_url}")
+    def emit(event_type: str, message: str, data: dict | None = None):
         if session_id:
-            event_emitter.emit(
-                session_id,
-                "video_processing",
-                f"Processing video {i + 1}/{len(video_urls)}: {video_url}",
-                {
-                    "video_url": video_url,
-                    "video_number": i + 1,
-                    "total_videos": len(video_urls),
-                },
-            )
+            event_emitter.emit(session_id, event_type, message, data)
+
+    emit("transcript_started", f"Starting transcript extraction for {total} videos")
+
+    transcripts: list[VideoTranscript] = []
+    for i, video in enumerate(videos):
+        video_url = f"https://www.youtube.com/watch?v={video['id']}"
+        position = {"video_url": video_url, "video_number": i + 1, "total_videos": total}
+        logger.info(f"Processing video {i + 1}/{total}: {video_url}")
+        emit("video_processing", f"Processing video {i + 1}/{total}: {video_url}", position)
+
         try:
-            # Call the tool directly instead of going through the LLM agent
-            try:
-                transcript = transcript_text(get_transcript_from_api(extract_video_id(video_url)))
-            except Exception as fetch_error:
-                transcript = f"Error: Could not get transcript. {fetch_error}"
-            logger.info(f"Transcript for video {video_url} fetched by fetcher tool")
-
-            # Handle case where transcript might be a list instead of a string
-            if isinstance(transcript, list):
-                transcript = " ".join(str(item) for item in transcript if item)
-
-            # Ensure transcript is a string
-            if not isinstance(transcript, str):
-                transcript = str(transcript) if transcript else ""
-
-            # Handle empty or None transcripts
-            if (
-                not transcript
-                or transcript.strip() == ""
-                or transcript.lower() == "none"
-            ):
-                error_msg = f"Empty transcript returned for video {video_url}. The video might be silent, too short, or have audio issues."
-                logger.warning(error_msg)
-                if session_id:
-                    event_emitter.emit(
-                        session_id,
-                        "video_error",
-                        f"Empty transcript for video {i + 1}/{len(video_urls)}: {video_url}",
-                        {
-                            "video_url": video_url,
-                            "video_number": i + 1,
-                            "total_videos": len(video_urls),
-                            "error": error_msg,
-                        },
-                    )
-                continue
-
-            # Check if transcript_fetcher returned an error message instead of a real transcript
-            if transcript.startswith("Error:"):
-                logger.warning(f"Transcript fetcher returned error for {video_url}: {transcript}")
-                if session_id:
-                    event_emitter.emit(
-                        session_id,
-                        "video_error",
-                        f"Failed to fetch transcript for video {i + 1}/{len(video_urls)}: {video_url}",
-                        {
-                            "video_url": video_url,
-                            "video_number": i + 1,
-                            "total_videos": len(video_urls),
-                            "error": transcript,
-                        },
-                    )
-                continue
-
-            aggregated_transcripts += (
-                f"\n\nTranscript for Video URL-{video_url}: \n{transcript}"
-            )
-            if session_id:
-                event_emitter.emit(
-                    session_id,
-                    "video_processed",
-                    f"Video {i + 1}/{len(video_urls)} processed successfully",
-                    {
-                        "video_url": video_url,
-                        "video_number": i + 1,
-                        "total_videos": len(video_urls),
-                    },
-                )
+            segments = get_transcript_from_api(video["id"])
         except Exception as e:
-            logger.error(f"Error processing video {video_url}: {str(e)}")
-            if session_id:
-                event_emitter.emit(
-                    session_id,
-                    "video_error",
-                    f"Error processing video {i + 1}/{len(video_urls)}: {str(e)}",
-                    {
-                        "video_url": video_url,
-                        "video_number": i + 1,
-                        "total_videos": len(video_urls),
-                        "error": str(e),
-                    },
-                )
+            logger.warning(f"Transcript fetch failed for {video_url}: {e}")
+            emit(
+                "video_error",
+                f"Failed to fetch transcript for video {i + 1}/{total}: {video_url}",
+                {**position, "error": f"Error: Could not get transcript. {e}"},
+            )
+            continue
 
-    if session_id:
-        event_emitter.emit(
-            session_id,
-            "transcript_complete",
-            f"Transcript extraction completed for {len(video_urls)} videos",
-        )
+        if not transcript_text(segments).strip():
+            error_msg = (
+                f"Empty transcript returned for video {video_url}. "
+                "The video might be silent, too short, or have audio issues."
+            )
+            logger.warning(error_msg)
+            emit(
+                "video_error",
+                f"Empty transcript for video {i + 1}/{total}: {video_url}",
+                {**position, "error": error_msg},
+            )
+            continue
 
-    return {"transcript": aggregated_transcripts}
+        transcripts.append({
+            "video_id": video["id"],
+            "title": video["title"],
+            "channel": video["channel"],
+            "segments": segments,
+        })
+        emit("video_processed", f"Video {i + 1}/{total} processed successfully", position)
 
-
-if __name__ == "__main__":
-    print(
-        transcript_agent(
-            {
-                "user_query": "",
-                "video_urls": ["https://www.youtube.com/watch?v=R1LE5xfasmw"],
-                "transcript": "",
-            }
-        )
-    )
+    emit("transcript_complete", f"Transcript extraction completed for {total} videos")
+    return {"transcripts": transcripts}

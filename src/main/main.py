@@ -230,15 +230,18 @@ async def process_selected_videos(
                 from dotenv import load_dotenv
                 load_dotenv(".env")
 
-                video_urls = [
-                    f"https://www.youtube.com/watch?v={vid}"
-                    for vid in request.video_ids
-                ]
+                # Titles and channels come from the session's search results
+                videos = []
+                for vid in request.video_ids:
+                    found = session_manager.get_video(session_id, vid) or {}
+                    videos.append({
+                        "id": vid,
+                        "title": found.get("title") or "YouTube video",
+                        "channel": found.get("channel") or "",
+                    })
 
                 initial_state = {
-                    "user_query": "",
-                    "video_urls": video_urls,
-                    "transcript": "",
+                    "videos": videos,
                     "namespace": namespace,
                     "session_id": session_id,
                 }
