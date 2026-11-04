@@ -52,3 +52,13 @@ GEMINI_TRANSCRIPT_MODEL = getenv("GEMINI_TRANSCRIPT_MODEL", "gemini-2.5-flash")
 
 # Folder where transcripts are cached (empty string disables the cache)
 TRANSCRIPT_CACHE_DIR = getenv("TRANSCRIPT_CACHE_DIR", str(BASE_DIR / ".cache" / "transcripts"))
+
+# --- Answering (chat) ---
+# Pinecone hosted reranker used to pick the best passages; empty disables it.
+# The free plan has a monthly rerank limit; when a rerank call fails the search
+# falls back to plain similarity automatically.
+RERANK_MODEL = getenv("RERANK_MODEL", "bge-reranker-v2-m3").strip()
+# Gemini model that writes chat answers
+QUERY_MODEL = getenv("QUERY_MODEL", "gemini-2.5-flash").strip()
+# Gemini "thinking" tokens before answering (0 = fastest first word)
+QUERY_THINKING_BUDGET = int(getenv("QUERY_THINKING_BUDGET", "0"))

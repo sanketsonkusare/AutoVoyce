@@ -27,4 +27,6 @@ def fake_index(monkeypatch):
     index = FakeIndex()
     monkeypatch.setattr(pinecone_uploader, "_get_index", lambda: index)
     monkeypatch.setattr(pinecone_uploader, "_INDEX_SETTLE_SECONDS", 0)
+    from src.rag import retrieval
+    monkeypatch.setattr(retrieval, "get_index", lambda: index)
     return index
