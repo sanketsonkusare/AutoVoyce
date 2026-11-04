@@ -12,7 +12,6 @@ dependencies = [
     "serpapi>=0.1.5",
     "youtube-transcript-api>=1.2.3",
     "langgraph",
-    "pyyaml",
     "langchain-text-splitters>=1.0.0",
     "pinecone>=5.0.0",
     "pydantic>=2.12.5",

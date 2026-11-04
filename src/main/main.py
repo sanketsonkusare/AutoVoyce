@@ -6,7 +6,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, StringConstraints
 from typing import Annotated, Optional, List
 from src.workflow.workflow import processing_workflow
-from src.agents.pinecone_query_agent import query_agent
+from src.rag.answer import AnswerError, answer, stream_answer
 from src.agents.youtube_retriever_agent import retriever_agent_with_metadata
 from src.utils import session_manager
 from src.utils.event_emitter import event_emitter
@@ -317,6 +317,14 @@ def shutdown_event():
 # The stream ends after one of these, so clients don't hold connections forever
 TERMINAL_EVENT_TYPES = {"processing_complete", "processing_error"}
 SSE_KEEPALIVE_SECONDS = 15.0
+# Headers that stop proxies from buffering server-sent events
+SSE_HEADERS = {
+    "Cache-Control": "no-cache, no-transform",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no",
+    "X-Content-Type-Options": "nosniff",
+    "Content-Type": "text/event-stream; charset=utf-8",
+}
 
 @app.get("/upload/status/{session_id}")
 async def stream_processing_status(session_id: str):
@@ -363,57 +371,64 @@ async def stream_processing_status(session_id: str):
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache, no-transform",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-            "X-Content-Type-Options": "nosniff",
-            "Content-Type": "text/event-stream; charset=utf-8",
-        },
+        headers=SSE_HEADERS,
     )
 
 
 # --- Query ---
+def _resolve_session(request: QueryRequest, x_session_id: Optional[str]) -> tuple[str, str]:
+    """Return (session_id, namespace) or raise 401/404."""
+    session_id = x_session_id or request.session_id
+    if not session_id:
+        raise HTTPException(
+            status_code=401,
+            detail="No active session. Please provide session_id or upload data first.",
+        )
+    session_manager.update_last_access(session_id)
+    namespace = session_manager.get_namespace(session_id)
+    if not namespace:
+        raise HTTPException(status_code=404, detail="Session not found or expired.")
+    return session_id, namespace
+
+
 @app.post("/query")
 async def query_endpoint(
     request: QueryRequest,
     x_session_id: Optional[str] = Header(None, alias="X-Session-ID"),
 ):
-    """
-    Invokes the Pinecone Query Agent to answer questions.
-    Now async — runs blocking LangChain call in thread pool.
-    """
+    """Answer a question about the session's videos (not streamed)."""
+    session_id, namespace = _resolve_session(request, x_session_id)
+    logger.info(f"Query for session {session_id} (namespace {namespace})")
     try:
-        session_id = x_session_id or request.session_id
-
-        logger.info(f"Query request - session: {session_id}")
-
-        if not session_id:
-            raise HTTPException(
-                status_code=401,
-                detail="No active session. Please provide session_id or upload data first.",
-            )
-
-        session_manager.update_last_access(session_id)
-        namespace = session_manager.get_namespace(session_id)
-
-        if not namespace:
-            raise HTTPException(status_code=404, detail="Session not found or expired.")
-
-        logger.info(f"Querying namespace {namespace} for session {session_id}")
-
-        # Run blocking LangChain/Gemini call in thread pool — keeps event loop free
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            _background_executor, query_agent, request.user_query, namespace, session_id
+        result = await answer(
+            session_id, namespace, request.user_query, executor=_background_executor
         )
+    except AnswerError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return {"response": result["response"], "namespace": namespace, "sources": result["sources"]}
 
-        return {"response": result, "namespace": namespace}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Query error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/query/stream")
+async def query_stream_endpoint(
+    request: QueryRequest,
+    x_session_id: Optional[str] = Header(None, alias="X-Session-ID"),
+):
+    """
+    Answer a question as server-sent events: "sources", then "token"s, then
+    "done" (or one "error"). Session problems return normal 4xx JSON.
+    """
+    session_id, namespace = _resolve_session(request, x_session_id)
+    logger.info(f"Streaming query for session {session_id} (namespace {namespace})")
+
+    async def event_generator():
+        async for event in stream_answer(
+            session_id, namespace, request.user_query, executor=_background_executor
+        ):
+            yield f"data: {json.dumps(event)}\n\n"
+
+    return StreamingResponse(
+        event_generator(), media_type="text/event-stream", headers=SSE_HEADERS
+    )
 
 
 # --- TTS ---
