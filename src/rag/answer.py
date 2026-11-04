@@ -29,6 +29,9 @@ def get_model():
         api_key=GOOGLE_API_KEY,
         thinking_budget=QUERY_THINKING_BUDGET,
         timeout=MODEL_TIMEOUT_SECONDS,
+        # One attempt only: the library default (6 attempts) would turn the
+        # 60 s limit into several minutes of waiting.
+        max_retries=1,
     )
 
 
@@ -89,6 +92,11 @@ async def stream_answer(
     # The answer is complete: save it before "done" so a consumer that stops
     # reading at "done" still records the exchange.
     full_answer = "".join(parts)
+    if not full_answer.strip():
+        # Gemini can stop without text (e.g. SAFETY or RECITATION) and no error
+        logger.warning(f"Empty answer from the model for session {session_id}")
+        yield {"type": "error", "message": ANSWER_ERROR_MESSAGE}
+        return
     history.add_exchange(session_id, question, full_answer)
     yield {"type": "done", "answer": full_answer}
 

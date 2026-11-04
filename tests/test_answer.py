@@ -119,3 +119,18 @@ async def test_answer_saves_history(search_calls, monkeypatch):
     use_model(monkeypatch, ["Good ", "[1]."])
     await answer("s", "ns", "q")
     assert history.get_history("s") == [("q", "Good.")]
+
+
+async def test_empty_model_answer_is_an_error(search_calls, monkeypatch):
+    use_model(monkeypatch, ["", "  "])  # e.g. Gemini stopped for SAFETY/RECITATION
+    events = await collect(stream_answer("s", "ns", "q"))
+    assert [e["type"] for e in events] == ["sources", "token", "error"] or \
+        [e["type"] for e in events] == ["sources", "error"]
+    assert events[-1]["message"] == ANSWER_ERROR_MESSAGE
+    assert history.get_history("s") == []
+
+
+def test_model_has_no_hidden_retries():
+    # The spec promises a 60 s limit; langchain-google-genai retries 6x by default
+    model = answer_module.get_model()
+    assert model.max_retries == 1 and model.timeout == 60
