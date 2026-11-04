@@ -388,7 +388,30 @@ def _resolve_session(request: QueryRequest, x_session_id: Optional[str]) -> tupl
     namespace = session_manager.get_namespace(session_id)
     if not namespace:
         raise HTTPException(status_code=404, detail="Session not found or expired.")
+    _ensure_processed(session_id)
     return session_id, namespace
+
+
+_PROCESSING_EVENTS = {"processing_started", "processing_complete", "processing_error"}
+
+
+def _ensure_processed(session_id: str) -> None:
+    """Raise 409 unless the session's videos have finished processing."""
+    last = next(
+        (e["type"] for e in reversed(event_emitter.get_events(session_id))
+         if e["type"] in _PROCESSING_EVENTS),
+        None,
+    )
+    if last is None:
+        raise HTTPException(
+            status_code=409,
+            detail="No videos have been processed yet. Select videos on the Ingestion page and process them first.",
+        )
+    if last == "processing_started":
+        raise HTTPException(
+            status_code=409,
+            detail="Your videos are still being processed. Please ask again once processing is complete.",
+        )
 
 
 @app.post("/query")

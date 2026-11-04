@@ -129,6 +129,8 @@ Once the server is running, you can access:
      - `{"type": "token", "text": "..."}` (many)
      - `{"type": "done", "answer": "..."}` (last), or `{"type": "error", "message": "..."}`
    - `url` opens the video at `start_seconds` (`null` when unknown)
+   - Both query endpoints return `409` with a readable `detail` while the session's
+     videos are still processing, or if none have been processed yet
    - Example:
      ```bash
      curl -N -X POST "http://localhost:8000/query/stream" \

@@ -8,6 +8,7 @@ from src.main import main as main_module
 from src.rag import answer as answer_module
 from src.rag import history
 from src.utils import session_manager
+from src.utils.event_emitter import event_emitter
 from tests.fakes import FakeChatModel
 
 
@@ -32,6 +33,8 @@ def live_session(monkeypatch, fake_index):
     fake_index.records[namespace] = [{
         "_id": "abcdefghijk-0", "chunk_text": "battery lasts all day", "video_id": "abcdefghijk",
         "title": "Phone Review", "channel": "Tech", "start_seconds": 272}]
+    event_emitter.emit(sid, "processing_started", "start")
+    event_emitter.emit(sid, "processing_complete", "done")
     model = FakeChatModel(chunks=["Battery is ", "great [1]."], calls=[])
     monkeypatch.setattr(answer_module, "get_model", lambda: model)
     yield sid
@@ -89,3 +92,44 @@ async def test_query_answer_error_is_502(client, live_session, fake_index):
         resp = await client.post("/query", json={"user_query": "q", "session_id": live_session})
     assert resp.status_code == 502
     assert resp.json()["detail"] == "Couldn't search your videos. Please try again."
+
+
+def _new_session(monkeypatch):
+    index = MagicMock()
+    index.describe_index_stats.return_value = {"namespaces": {}}
+    pc = MagicMock()
+    pc.Index.return_value = index
+    monkeypatch.setattr(session_manager, "Pinecone", lambda **_: pc)
+    sid, _ = session_manager.create_session()
+    return sid
+
+
+@pytest.mark.parametrize("path", ["/query", "/query/stream"])
+async def test_asking_while_processing_is_409(client, monkeypatch, path):
+    sid = _new_session(monkeypatch)
+    event_emitter.emit(sid, "processing_started", "start")
+    async with client:
+        resp = await client.post(path, json={"user_query": "q", "session_id": sid})
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == (
+        "Your videos are still being processed. Please ask again once processing is complete.")
+
+
+@pytest.mark.parametrize("path", ["/query", "/query/stream"])
+async def test_asking_before_any_processing_is_409(client, monkeypatch, path):
+    sid = _new_session(monkeypatch)
+    async with client:
+        resp = await client.post(path, json={"user_query": "q", "session_id": sid})
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == (
+        "No videos have been processed yet. Select videos on the Ingestion page and process them first.")
+
+
+async def test_asking_after_processing_error_is_allowed(client, monkeypatch, fake_index):
+    sid = _new_session(monkeypatch)
+    event_emitter.emit(sid, "processing_started", "start")
+    event_emitter.emit(sid, "processing_error", "boom")
+    monkeypatch.setattr(answer_module, "get_model", lambda: FakeChatModel(chunks=["ok"], calls=[]))
+    async with client:
+        resp = await client.post("/query", json={"user_query": "q", "session_id": sid})
+    assert resp.status_code == 200

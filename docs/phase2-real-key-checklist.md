@@ -48,7 +48,9 @@ Open http://localhost:3000/ingestion.
 | 8 | Ask something unrelated, e.g. "what's the weather in Paris?" | Starts with "The selected videos don't cover this, but…", no source chips |
 | 9 | Use the mic to ask a question (Chrome/Edge) | Answer is read aloud without saying the numbers in brackets |
 | 10 | Stop the backend, restart it with `RERANK_MODEL=` (empty), ingest again and ask | Answers still work (reranking off) |
-| 11 | Optional, in Pinecone console | Records in the `session_…` namespace have `video_id`, `title`, `channel`, `start_seconds` |
+| 11 | Start a new search, process videos, and switch to Chat **before** "Processing Complete!" to ask a question | "Your videos are still being processed…" message, not a wrong "videos don't cover this" |
+| 12 | Process only a video that has no captions (so nothing is uploaded), then ask | Note what happens: a labelled "don't cover this" answer is fine; "Couldn't search your videos" means Pinecone rejects searches on a namespace that was never created — report it |
+| 13 | Optional, in Pinecone console | Records in the `session_…` namespace have `video_id`, `title`, `channel`, `start_seconds` |
 
 If anything fails, copy the backend terminal output around the failure and
 the browser console error.
