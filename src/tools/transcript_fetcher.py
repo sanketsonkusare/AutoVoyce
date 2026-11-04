@@ -1,13 +1,34 @@
-from langchain.tools import tool
 from youtube_transcript_api import YouTubeTranscriptApi
-from youtube_transcript_api.formatters import TextFormatter
 from pathlib import Path
+from typing import TypedDict
+import json
 import re
 import time
 import logging
 import requests
 
 logger = logging.getLogger("autovoyce.transcript")
+
+class Segment(TypedDict):
+    """One piece of a transcript. start is in seconds, None when unknown."""
+    text: str
+    start: float | None
+
+
+def transcript_text(segments: list[Segment]) -> str:
+    """Join segment texts into plain text."""
+    return " ".join(seg["text"] for seg in segments)
+
+
+def _clean_segments(segments: list[Segment]) -> list[Segment]:
+    """Strip text and drop empty segments."""
+    cleaned = []
+    for seg in segments:
+        text = (seg.get("text") or "").strip()
+        if text:
+            cleaned.append({"text": text, "start": seg.get("start")})
+    return cleaned
+
 
 # Gemini replies with this exact text when a video has no speech.
 NO_SPEECH_MARKER = "NO_SPEECH"
@@ -35,8 +56,9 @@ def extract_video_id(video_url: str) -> str:
 
 
 # --- Cache -------------------------------------------------------------------
-# Each transcript is saved once, so a video is never fetched twice.
-# Cache errors never break a request: the cache is only a speed-up.
+# Each transcript is saved once (as JSON segments), so a video is never fetched
+# twice. Cache errors never break a request: the cache is only a speed-up.
+# Old plain-text caches ({id}.txt) have no timestamps and are ignored.
 
 def _cache_file(video_id: str) -> Path | None:
     from settings import TRANSCRIPT_CACHE_DIR
@@ -44,29 +66,30 @@ def _cache_file(video_id: str) -> Path | None:
         return None
     if not re.fullmatch(r"[a-zA-Z0-9_-]{11}", video_id):
         return None  # Only cache real video IDs (also blocks path tricks)
-    return Path(TRANSCRIPT_CACHE_DIR) / f"{video_id}.txt"
+    return Path(TRANSCRIPT_CACHE_DIR) / f"{video_id}.json"
 
 
-def _read_cache(video_id: str) -> str | None:
+def _read_cache(video_id: str) -> list[Segment] | None:
     path = _cache_file(video_id)
     try:
         if path and path.is_file():
-            text = path.read_text(encoding="utf-8")
-            if text.strip():
-                return text
-    except OSError as e:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            segments = _clean_segments(data.get("segments", []))
+            if segments:
+                return segments
+    except (OSError, ValueError, AttributeError, TypeError) as e:
         logger.warning(f"Could not read transcript cache for {video_id}: {e}")
     return None
 
 
-def _write_cache(video_id: str, text: str) -> None:
+def _write_cache(video_id: str, source: str, segments: list[Segment]) -> None:
     path = _cache_file(video_id)
     if not path:
         return
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
-        tmp.write_text(text, encoding="utf-8")
+        tmp.write_text(json.dumps({"source": source, "segments": segments}), encoding="utf-8")
         tmp.replace(path)  # Atomic rename: no half-written files
     except OSError as e:
         logger.warning(f"Could not write transcript cache for {video_id}: {e}")
@@ -86,7 +109,18 @@ class _TimeoutSession(requests.Session):
         return super().request(*args, **kwargs)
 
 
-def get_transcript_from_captions(video_id: str) -> str:
+def _segments_from_fetched(fetched) -> list[Segment]:
+    """Caption lines -> segments, keeping each line's start time."""
+    segments = _clean_segments(
+        [{"text": item.get("text", ""), "start": float(item.get("start", 0.0))}
+         for item in fetched.to_raw_data()]
+    )
+    if not segments:
+        raise Exception("Captions are empty")
+    return segments
+
+
+def get_transcript_from_captions(video_id: str) -> list[Segment]:
     """
     Fetch transcript using YouTube's caption API (youtube-transcript-api).
 
@@ -132,8 +166,7 @@ def get_transcript_from_captions(video_id: str) -> str:
         # Primary: Use simple fetch() — tries English by default
         try:
             fetched = ytt_api.fetch(video_id, languages=['en', 'en-US', 'en-GB'])
-            formatter = TextFormatter()
-            return formatter.format_transcript(fetched)
+            return _segments_from_fetched(fetched)
         except Exception:
             pass
 
@@ -151,8 +184,7 @@ def get_transcript_from_captions(video_id: str) -> str:
                 transcript = transcript_list.find_transcript(['en', 'en-US', 'en-GB'])
 
         fetched = transcript.fetch()
-        formatter = TextFormatter()
-        return formatter.format_transcript(fetched)
+        return _segments_from_fetched(fetched)
 
     except Exception as e:
         raise Exception(f"No captions available: {str(e)}")
@@ -160,7 +192,7 @@ def get_transcript_from_captions(video_id: str) -> str:
 
 # --- Source 2: Gemini reads the YouTube link ------------------------------------
 
-def get_transcript_from_gemini(video_id: str) -> str:
+def get_transcript_from_gemini(video_id: str) -> list[Segment]:
     """
     Ask Gemini to transcribe a public YouTube video from its URL.
 
@@ -204,7 +236,8 @@ def get_transcript_from_gemini(video_id: str) -> str:
             text = (response.text or "").strip()
             if not text or text == NO_SPEECH_MARKER:
                 raise Exception("Gemini found no speech in this video")
-            return text
+            # Gemini gives no reliable timestamps: one untimed segment
+            return [{"text": text, "start": None}]
         except errors.APIError as e:
             retryable = e.code == 429 or (e.code is not None and e.code >= 500)
             if retryable and attempt < len(waits):
@@ -220,9 +253,9 @@ def get_transcript_from_gemini(video_id: str) -> str:
 
 # --- Main entry point ------------------------------------------------------------
 
-def get_transcript_from_api(video_id: str) -> str:
+def get_transcript_from_api(video_id: str) -> list[Segment]:
     """
-    Get a transcript for a video, trying sources in order.
+    Get a transcript for a video as timestamped segments, trying sources in order.
 
     TRANSCRIPT_SOURCE setting:
       - "auto" (default): cache -> YouTube captions -> Gemini
@@ -240,10 +273,10 @@ def get_transcript_from_api(video_id: str) -> str:
 
     if TRANSCRIPT_SOURCE in ("auto", "captions"):
         try:
-            text = get_transcript_from_captions(video_id)
+            segments = get_transcript_from_captions(video_id)
             logger.info(f"Got transcript for {video_id} from YouTube captions")
-            _write_cache(video_id, text)
-            return text
+            _write_cache(video_id, "captions", segments)
+            return segments
         except Exception as e:
             errors_seen.append(str(e))
             if TRANSCRIPT_SOURCE == "captions":
@@ -254,43 +287,18 @@ def get_transcript_from_api(video_id: str) -> str:
         try:
             logger.info(f"Transcribing {video_id} with Gemini...")
             started = time.monotonic()
-            text = get_transcript_from_gemini(video_id)
+            segments = get_transcript_from_gemini(video_id)
             logger.info(
                 f"Got transcript for {video_id} from Gemini "
-                f"({len(text)} chars in {time.monotonic() - started:.0f}s)"
+                f"({len(transcript_text(segments))} chars in {time.monotonic() - started:.0f}s)"
             )
-            _write_cache(video_id, text)
-            return text
+            _write_cache(video_id, "gemini", segments)
+            return segments
         except Exception as e:
             errors_seen.append(str(e))
 
     # Keep the "No captions available" prefix: main.py maps it to HTTP 404.
     raise Exception("No captions available: " + " | ".join(errors_seen))
-
-
-@tool
-def transcript_fetcher(video_url: str) -> str:
-    """
-    Fetches transcript for a YouTube video (captions, with Gemini as fallback).
-
-    Args:
-        video_url (str): The URL of the YouTube video.
-
-    Returns:
-        str: The full transcript text.
-    """
-    video_id = extract_video_id(video_url)
-    logger.info(f"Processing video: {video_id}")
-
-    try:
-        logger.info("Fetching transcript...")
-        transcript = get_transcript_from_api(video_id)
-        logger.info("Got transcript")
-        return transcript
-    except Exception as e:
-        error_msg = f"Error: Could not get transcript. {str(e)}"
-        logger.warning(error_msg)
-        return error_msg
 
 
 # --- Usage ---
@@ -301,9 +309,10 @@ if __name__ == "__main__":
     from settings import TRANSCRIPT_SOURCE
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-    target = sys.argv[1] if len(sys.argv) > 1 else "9GSDvO0LFFE"
+    target = extract_video_id(sys.argv[1] if len(sys.argv) > 1 else "9GSDvO0LFFE")
     print(f"Source: {TRANSCRIPT_SOURCE}")
     started = time.monotonic()
-    transcript = transcript_fetcher.invoke({"video_url": target})
-    print(f"\n--- Transcript ({len(transcript)} chars, {time.monotonic() - started:.0f}s) ---\n")
-    print(transcript[:1500] + ("\n..." if len(transcript) > 1500 else ""))
+    segments = get_transcript_from_api(target)
+    text = transcript_text(segments)
+    print(f"\n--- Transcript ({len(segments)} segments, {len(text)} chars, {time.monotonic() - started:.0f}s) ---\n")
+    print(text[:1500] + ("\n..." if len(text) > 1500 else ""))

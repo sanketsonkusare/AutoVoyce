@@ -1,4 +1,4 @@
-from src.tools.transcript_fetcher import transcript_fetcher
+from src.tools.transcript_fetcher import extract_video_id, get_transcript_from_api, transcript_text
 from src.schemas.response_schema import ResponseSchema
 from src.utils.event_emitter import event_emitter
 import logging
@@ -34,7 +34,10 @@ def transcript_agent(state: ResponseSchema) -> dict:
             )
         try:
             # Call the tool directly instead of going through the LLM agent
-            transcript = transcript_fetcher.invoke({"video_url": video_url})
+            try:
+                transcript = transcript_text(get_transcript_from_api(extract_video_id(video_url)))
+            except Exception as fetch_error:
+                transcript = f"Error: Could not get transcript. {fetch_error}"
             logger.info(f"Transcript for video {video_url} fetched by fetcher tool")
 
             # Handle case where transcript might be a list instead of a string

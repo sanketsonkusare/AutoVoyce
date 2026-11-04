@@ -149,24 +149,25 @@ async def get_transcript(video_id: str):
     Uses Webshare proxy if configured.
     """
     try:
-        from src.tools.transcript_fetcher import get_transcript_from_api
+        from src.tools import transcript_fetcher
 
         logger.info(f"Fetching transcript for video: {video_id}")
 
         # Run blocking transcript fetch in thread pool
-        loop = asyncio.get_event_loop()
-        transcript = await loop.run_in_executor(
-            _background_executor, get_transcript_from_api, video_id
+        loop = asyncio.get_running_loop()
+        segments = await loop.run_in_executor(
+            _background_executor, transcript_fetcher.get_transcript_from_api, video_id
         )
+        transcript = transcript_fetcher.transcript_text(segments)
 
-        if not transcript or transcript.strip() == "":
+        if not transcript.strip():
             raise HTTPException(status_code=404, detail="No transcript available for this video")
 
         logger.info(f"Got transcript for {video_id}: {len(transcript)} chars")
         return {
             "transcript": transcript,
             "video_id": video_id,
-            "segments": len(transcript.split(". ")),
+            "segments": len(segments),
         }
     except HTTPException:
         raise
