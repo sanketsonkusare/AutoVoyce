@@ -1,37 +1,31 @@
-from src.tools.pinecone_uploader import upload_transcript_to_pinecone
+from src.tools.pinecone_uploader import upload_transcripts
 from src.schemas.response_schema import ResponseSchema
 from src.utils.event_emitter import event_emitter
+import logging
+
+logger = logging.getLogger("autovoyce.uploader_agent")
+
 
 def uploader_agent(state: ResponseSchema) -> dict:
-    transcript = state.get("transcript", "")
-    namespace = state.get("namespace", "youtube_transcripts")  # Get namespace from state
+    transcripts = state.get("transcripts", [])
+    namespace = state.get("namespace", "youtube_transcripts")
     session_id = state.get("session_id", "")
-    
-    if not transcript:
-        return {"transcript": "No transcript provided."}
 
-    print(f"Processing transcript upload to namespace: {namespace}...")
+    if not transcripts:
+        return {"query_response": "No transcript provided."}
+
+    logger.info(f"Uploading {len(transcripts)} transcripts to namespace: {namespace}")
     try:
-        # Call the tool directly with namespace and session_id for event emission
-        response = upload_transcript_to_pinecone.invoke({
-            "transcript": transcript,
-            "namespace": namespace,
-            "session_id": session_id
-        })
+        count = upload_transcripts(transcripts, namespace, session_id)
+        response = f"Uploaded {count} chunks to Pinecone namespace '{namespace}'."
         if session_id:
             event_emitter.emit(session_id, "pinecone_upload_complete", f"Successfully uploaded to Pinecone namespace: {namespace}")
     except Exception as e:
         response = f"Error during upload: {str(e)}"
+        logger.error(response, exc_info=True)
         if session_id:
             event_emitter.emit(session_id, "pinecone_upload_error", f"Error uploading to Pinecone: {str(e)}", {
                 "error": str(e)
             })
-        import traceback
-        traceback.print_exc()
-    
-    return {"transcript": transcript, "query_response": response}
 
-if __name__ == "__main__":
-    # Test with dummy data
-    test_transcript = "This sanket is a test transcript.\n" * 10
-    print(uploader_agent({"user_query": "test", "video_ids": [], "transcript": test_transcript}))
+    return {"query_response": response}

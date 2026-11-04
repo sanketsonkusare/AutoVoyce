@@ -45,6 +45,17 @@ PINECONE_HOST_URL=your_pinecone_host_url
 
 **Note:** Replace all placeholder values with your actual API keys and configuration.
 
+Optional settings for chat answers (the defaults work as-is):
+
+```env
+RERANK_MODEL=bge-reranker-v2-m3   # Pinecone hosted reranker; set empty to turn reranking off
+QUERY_MODEL=gemini-2.5-flash      # Gemini model that writes answers
+QUERY_THINKING_BUDGET=0           # Gemini thinking tokens before answering (0 = fastest)
+```
+
+Reranking has a monthly limit on Pinecone's free plan. When a rerank call
+fails, search falls back to plain similarity automatically.
+
 ### 4. Activate Virtual Environment
 
 ```bash
@@ -99,7 +110,9 @@ Once the server is running, you can access:
      ```
 
 2. **POST /query**
-   - Queries the Pinecone knowledge base for a session
+   - Answers a question about the session's videos (not streamed)
+   - Response: `{"response": "...[1]...", "namespace": "...", "sources": [...]}`; each `[n]`
+     in the answer refers to the source with that `n` (see `/query/stream` below)
    - Request body: `{"user_query": "your question", "session_id": "<id from /upload>"}`
      (or send the id in an `X-Session-ID` header). There is no session cookie.
    - Example:
@@ -107,6 +120,22 @@ Once the server is running, you can access:
      curl -X POST "http://localhost:8000/query" \
           -H "Content-Type: application/json" \
           -d '{"user_query": "What are the best iPhones?", "session_id": "<session_id>"}'
+     ```
+
+3. **POST /query/stream**
+   - Same request as `/query`; the answer arrives as server-sent events
+     (one `data: {json}` line per event):
+     - `{"type": "sources", "sources": [{"n", "video_id", "title", "channel", "start_seconds", "url", "text"}]}` (first)
+     - `{"type": "token", "text": "..."}` (many)
+     - `{"type": "done", "answer": "..."}` (last), or `{"type": "error", "message": "..."}`
+   - `url` opens the video at `start_seconds` (`null` when unknown)
+   - Both query endpoints return `409` with a readable `detail` while the session's
+     videos are still processing, or if none have been processed yet
+   - Example:
+     ```bash
+     curl -N -X POST "http://localhost:8000/query/stream" \
+          -H "Content-Type: application/json" \
+          -d '{"user_query": "Which phone has the best battery?", "session_id": "<session_id>"}'
      ```
 
 ## Development
@@ -125,8 +154,9 @@ uv run pytest
 ```
 backend/
 ├── src/
-│   ├── agents/          # LangChain agents
+│   ├── agents/          # Ingestion workflow steps
 │   ├── main/            # FastAPI application
+│   ├── rag/             # Search, prompt, chat history and answer streaming
 │   ├── schemas/         # Pydantic schemas
 │   ├── tools/           # Custom tools
 │   ├── utils/           # Utilities and helpers

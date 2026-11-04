@@ -12,6 +12,7 @@ logger = logging.getLogger("autovoyce.sessions")
 _lock = threading.Lock()
 _sessions: Dict[str, str] = {}
 _session_last_access: Dict[str, float] = {}
+_videos: Dict[str, Dict[str, dict]] = {}  # session_id -> video_id -> search result
 _scheduler_thread: Optional[threading.Thread] = None
 _stop_scheduler: threading.Event = threading.Event()
 
@@ -98,6 +99,18 @@ def update_last_access(session_id: str):
             _session_last_access[session_id] = time.time()
 
 
+def set_videos(session_id: str, videos: list[dict]) -> None:
+    """Remember the search results of a session (for titles and channels). Thread-safe."""
+    with _lock:
+        _videos[session_id] = {video["id"]: video for video in videos if video.get("id")}
+
+
+def get_video(session_id: str, video_id: str) -> Optional[dict]:
+    """Return a video from the session's search results, or None. Thread-safe."""
+    with _lock:
+        return _videos.get(session_id, {}).get(video_id)
+
+
 def get_namespace(session_id: str) -> Optional[str]:
     """
     Retrieves the namespace for a given session ID. Thread-safe.
@@ -114,10 +127,10 @@ def _free_session_memory(session_id: str, namespace: str) -> None:
     """Release everything kept in memory for a session."""
     # Imported here to avoid a circular import at module load time
     from src.utils.event_emitter import event_emitter
-    from src.agents.pinecone_query_agent import forget_session
+    from src.rag import history
 
     event_emitter.clear_session(session_id)
-    forget_session(namespace, session_id)
+    history.clear(session_id)
 
 
 def delete_session(session_id: str) -> bool:
@@ -129,6 +142,7 @@ def delete_session(session_id: str) -> bool:
     with _lock:
         namespace = _sessions.pop(session_id, None)
         _session_last_access.pop(session_id, None)
+        _videos.pop(session_id, None)
 
     if not namespace:
         logger.warning(f"No namespace found for session {session_id}")
